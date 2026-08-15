@@ -1,0 +1,13 @@
+.venv*/
+.vs/
+out/
+build*/
+*.h5
+.vscode/
+tmp/
+output/
+results/
+docs/
+tools/
+geometry_configs/
+meshes/
