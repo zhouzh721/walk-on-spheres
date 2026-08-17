@@ -58,11 +58,22 @@ Points that still lack three valid rays are saved with location code `3`
 (`Indeterminate`) and are not evaluated by WoS. This option and its diagnostics
 do not apply to 2D.
 
+For `screened_poisson`, use `--alpha <positive number>` to set the screening
+coefficient (default `5`). Its unit is the inverse of the mesh coordinate unit.
+To limit the screened boundary-layer stopping bias, the solver uses
+`min(epsilon, 0.05 / alpha)` as the effective stopping distance. It reports the
+adjustment when this is smaller than the requested `epsilon`, and the HDF5
+metadata records the effective value used by the walk.
+The source integral uses uniform volume sampling by default. Pass
+`--source-mode green` to sample proportionally to the ball Green function;
+`--source-mode uniform` keeps the original estimator.
+
 Examples:
 
 ```bash
 # 2D screened Poisson on the annulus, 64x64 grid, 8 ranks
 mpirun -np 8 ./build/wos screened_poisson 64 64 meshes/annulus.obj \
+  --alpha 5 --source-mode green \
   --output results/annulus_screened_poisson_64.h5
 
 # Reproducible 2D Laplace run
@@ -98,6 +109,8 @@ python plot.py results/run.h5 --mesh meshes/annulus.obj --field mean_steps
 The same file stores `N_walks`, `epsilon`, `max_steps`, `max_steps_hits`, and
 `seed` under `/metadata`. 3D files additionally store `max_ray_attempts`,
 `ambiguous_ray_retries`, and `indeterminate_points`.
+Screened Poisson files also store `alpha` and `source_mode`, where source mode
+`0` is uniform volume sampling and `1` is Green-function sampling.
 `plot.py` can still visualise `mean` from older files whose solution dataset is
 named `u`.
 

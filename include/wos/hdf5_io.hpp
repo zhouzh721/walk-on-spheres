@@ -6,6 +6,7 @@
 #include <vector>
 #include "wos/field_3D.hpp"
 #include "wos/grid.hpp"
+#include "wos/source_mode.hpp"
 
 namespace wos {
 
@@ -27,7 +28,10 @@ inline bool wos_write_hdf5(const char *filename,
                            int max_ray_attempts,
                            long long ambiguous_ray_retries,
                            long long indeterminate_points,
-                           std::uint64_t seed)
+                           std::uint64_t seed,
+                           bool write_screened_metadata,
+                           double alpha,
+                           SourceMode source_mode)
 {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -308,6 +312,13 @@ inline bool wos_write_hdf5(const char *filename,
                          &ambiguous_ray_retries) &&
             write_scalar("indeterminate_points", H5T_NATIVE_LLONG,
                          &indeterminate_points);
+    }
+    if (write_screened_metadata) {
+        const int source_mode_value = static_cast<int>(source_mode);
+        metadata_ok =
+            metadata_ok &&
+            write_scalar("alpha", H5T_NATIVE_DOUBLE, &alpha) &&
+            write_scalar("source_mode", H5T_NATIVE_INT, &source_mode_value);
     }
     const herr_t metadata_close_status = H5Gclose(metadata);
     if (!metadata_ok || !all_succeeded(metadata_close_status >= 0)) {

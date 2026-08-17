@@ -31,6 +31,11 @@ static void print_usage(const char *program) {
         "      --max-steps N  maximum steps per WoS path (default: 1000)\n"
         "      --max-ray-attempts N\n"
         "                     maximum 3D inside-test ray attempts (default: 12)\n"
+        "      --alpha X      screened Poisson coefficient (default: 5;\n"
+        "                     screened_poisson only)\n"
+        "      --source-mode MODE\n"
+        "                     screened source sampling: uniform or green\n"
+        "                     (screened_poisson only)\n"
         "      --force        allow an existing output file to be overwritten\n"
         "  -h, --help         show this help message\n",
         program
@@ -91,9 +96,13 @@ int main(int argc, char **argv) {
     double epsilon = 1e-2;
     int max_steps = 1'000;
     int max_ray_attempts = 12;
+    double alpha = 5.0;
+    SourceMode source_mode = SourceMode::Uniform;
     bool force_output = false;
     std::uint64_t seed = 0;
     bool seed_provided = false;
+    bool alpha_provided = false;
+    bool source_mode_provided = false;
 
     // Options may appear before or after the positional arguments.
     int cli_status = 0; // 0 = continue, 1 = error, 2 = help shown
@@ -171,6 +180,35 @@ int main(int argc, char **argv) {
                     cli_status = 1;
                     break;
                 }
+            } else if (std::strcmp(argv[i], "--alpha") == 0) {
+                if (++i >= argc) {
+                    std::fprintf(stderr, "%s requires a positive finite number\n",
+                                 argv[i-1]);
+                    cli_status = 1;
+                    break;
+                }
+                if (!parse_positive_double(argv[i], &alpha)) {
+                    std::fprintf(stderr, "Invalid --alpha value: %s\n", argv[i]);
+                    cli_status = 1;
+                    break;
+                }
+                alpha_provided = true;
+            } else if (std::strcmp(argv[i], "--source-mode") == 0) {
+                if (++i >= argc) {
+                    std::fprintf(stderr, "%s requires uniform or green\n", argv[i-1]);
+                    cli_status = 1;
+                    break;
+                }
+                if (std::strcmp(argv[i], "uniform") == 0) {
+                    source_mode = SourceMode::Uniform;
+                } else if (std::strcmp(argv[i], "green") == 0) {
+                    source_mode = SourceMode::Green;
+                } else {
+                    std::fprintf(stderr, "Invalid --source-mode value: %s\n", argv[i]);
+                    cli_status = 1;
+                    break;
+                }
+                source_mode_provided = true;
             } else if (std::strcmp(argv[i], "--force") == 0) {
                 force_output = true;
             } else if (argv[i][0] == '-') {
@@ -233,6 +271,10 @@ int main(int argc, char **argv) {
     MPI_Bcast(&epsilon, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_steps, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_ray_attempts, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&alpha, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    int source_mode_value = static_cast<int>(source_mode);
+    MPI_Bcast(&source_mode_value, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    source_mode = static_cast<SourceMode>(source_mode_value);
     MPI_Bcast(&seed, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
     if (rank == 0) {
         std::printf("Random seed: %llu%s\n",
@@ -261,6 +303,21 @@ int main(int argc, char **argv) {
         return 1;
     }
     const Equation *eq = equation_registry[eq_idx];
+
+    if (rank == 0 && eq != &screened_poisson) {
+        if (alpha_provided) {
+            std::fprintf(stderr,
+                         "Warning: --alpha applies only to screened_poisson; "
+                         "it will be ignored for equation '%s'.\n",
+                         eq->name);
+        }
+        if (source_mode_provided) {
+            std::fprintf(stderr,
+                         "Warning: --source-mode applies only to screened_poisson; "
+                         "it will be ignored for equation '%s'.\n",
+                         eq->name);
+        }
+    }
 
     int output_ok = 1;
     if (rank == 0 && !force_output) {
@@ -320,11 +377,11 @@ int main(int argc, char **argv) {
     if (dim == 2) {
         rc = eq->run_2D(rank, size, mesh_filename_buf.data(), output_filename_buf.data(),
                         Nx, Ny, Nz, N_walks, epsilon, max_steps,
-                        max_ray_attempts, seed);
+                        max_ray_attempts, seed, alpha, source_mode);
     } else {
         rc = eq->run_3D(rank, size, mesh_filename_buf.data(), output_filename_buf.data(),
                         Nx, Ny, Nz, N_walks, epsilon, max_steps,
-                        max_ray_attempts, seed);
+                        max_ray_attempts, seed, alpha, source_mode);
     }
 
     MPI_Finalize();

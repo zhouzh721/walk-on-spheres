@@ -8,7 +8,7 @@
 #include "wos/runner.hpp"
 #include "wos/wos.hpp"
 
-using namespace wos;
+namespace wos {
 
 namespace {
 
@@ -79,13 +79,17 @@ struct Helmholtz3D {
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed) {
+           uint64_t seed, double alpha, SourceMode source_mode) {
+    (void)alpha;
+    (void)source_mode;
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
                   max_steps, max_ray_attempts, Helmholtz2D{}, seed);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed) {
+           uint64_t seed, double alpha, SourceMode source_mode) {
+    (void)alpha;
+    (void)source_mode;
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
                   max_steps, max_ray_attempts, Helmholtz3D{}, seed);
 }
@@ -98,3 +102,5 @@ const Equation helmholtz = {
     run_2D,
     run_3D,
 };
+
+}  // namespace wos

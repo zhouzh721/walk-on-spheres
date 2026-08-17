@@ -3,6 +3,7 @@
 #include "wos/bvh.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
+#include "wos/source_mode.hpp"
 #include "wos/wos_result.hpp"
 
 namespace wos {
@@ -70,11 +71,29 @@ SampleResult wos_sample(const BVH<N> &bvh, Point<N> p0, const StartPoint<N> &sta
                 source_may_intersect = eq.source_may_intersect(sphere);
             }
             if (source_may_intersect) {
-                Point<N> sp = sphere_sample(sphere, source_rng);
-                double source_value = eq.source(sp);
-                if (source_value != 0.0) {
-                    sample += weight * sphere_volume(sphere) * source_value
-                            * eq.green(sphere, p, sp);
+                if constexpr (Eq::has_green_source) {
+                    if (eq.source_mode == SourceMode::Green) {
+                        Point<N> sp = eq.sample_green(sphere, source_rng);
+                        const double source_value = eq.source(sp);
+                        if (source_value != 0.0) {
+                            sample += weight * eq.green_mass(sphere.radius)
+                                    * source_value;
+                        }
+                    } else {
+                        Point<N> sp = sphere_sample(sphere, source_rng);
+                        const double source_value = eq.source(sp);
+                        if (source_value != 0.0) {
+                            sample += weight * sphere_volume(sphere) * source_value
+                                    * eq.green(sphere, p, sp);
+                        }
+                    }
+                } else {
+                    Point<N> sp = sphere_sample(sphere, source_rng);
+                    const double source_value = eq.source(sp);
+                    if (source_value != 0.0) {
+                        sample += weight * sphere_volume(sphere) * source_value
+                                * eq.green(sphere, p, sp);
+                    }
                 }
             }
         }

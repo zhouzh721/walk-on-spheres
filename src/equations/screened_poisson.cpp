@@ -1,20 +1,49 @@
 // Screened Poisson equation: ∆u - α²u = -f on a domain Ω, with boundary u = g on ∂Ω
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include "equations.hpp"
-#include "wos/fastmath.hpp"
 #include "wos/mesh.hpp"
 #include "wos/runner.hpp"
+#include "wos/screened.hpp"
+#include "wos/source_mode.hpp"
 #include "wos/wos.hpp"
 
-using namespace wos;
+namespace wos {
 
 namespace {
+
+// The usual nearest-boundary termination drops the final ball's screened
+// attenuation and source contribution. Keep that approximation small by
+// requiring the terminal ball to also satisfy alpha * radius <= 0.05.
+constexpr double max_terminal_alpha_radius = 0.05;
+
+double screened_epsilon(int rank, double requested_epsilon, double alpha) {
+    const double screening_limited_epsilon =
+        max_terminal_alpha_radius / alpha;
+    const double effective_epsilon =
+        std::min(requested_epsilon, screening_limited_epsilon);
+
+    if (rank == 0 && effective_epsilon < requested_epsilon) {
+        std::printf(
+            "Screened stopping distance reduced:\n"
+            "  requested epsilon:       %.12g\n"
+            "  effective epsilon:       %.12g\n"
+            "  alpha * effective eps:   %.12g\n",
+            requested_epsilon, effective_epsilon,
+            alpha * effective_epsilon);
+    }
+    return effective_epsilon;
+}
 
 struct ScreenedPoisson2D {
     [[maybe_unused]] static constexpr bool has_source = true;
     [[maybe_unused]] static constexpr bool has_screening = true;
-    static constexpr double alpha = 5.0;
+    [[maybe_unused]] static constexpr bool has_green_source = true;
+
+    double alpha = 5.0;
+    SourceMode source_mode = SourceMode::Uniform;
 
     bool source_may_intersect(Sphere2D sphere) const {
         constexpr double source_x = 0.45;
@@ -37,25 +66,37 @@ struct ScreenedPoisson2D {
 
     // Green's function for screened Poisson operator on 2D spherical domain
     double green(Sphere2D sphere, Point2D x, Point2D y) const {
-        double r = dist(x, y);
+        const double r = dist(x, y);
         assert(r > 0.0);
-        double prod = r * alpha;
-        double prod_R = sphere.radius * alpha;
-        return (bessel_K0(prod) - bessel_I0(prod) * bessel_K0(prod_R) / bessel_I0(prod_R)) / (2*M_PI);
+        return screened::green_2d(alpha, sphere.radius, r);
     }
 
     // weight factor: 1 / I_0(αr) for the screened Poisson eq in 2D
     double screening_factor(double radius) const {
-        double prod = radius * alpha;
-        if (prod < 1e-8) return 1.0;
-        return 1.0 / bessel_I0(prod);
+        return screened::weight_2d(alpha, radius);
+    }
+
+    double green_mass(double radius) const {
+        return screened::mass_2d(alpha, radius);
+    }
+
+    Point2D sample_green(Sphere2D sphere, PRNG &rng) const {
+        const double radius = screened::sample_radius_2d(alpha, sphere.radius, rng);
+        const double angle = 2.0 * screened::pi * rng.unit();
+        return Point2D{
+            sphere.centre.x + radius * std::cos(angle),
+            sphere.centre.y + radius * std::sin(angle),
+        };
     }
 };
 
 struct ScreenedPoisson3D {
-    [[maybe_unused]] static constexpr bool has_source = true;
+    [[maybe_unused]] static constexpr bool has_source = false;
     [[maybe_unused]] static constexpr bool has_screening = true;
-    static constexpr double alpha = 5.0;
+    [[maybe_unused]] static constexpr bool has_green_source = true;
+
+    double alpha = 5.0;
+    SourceMode source_mode = SourceMode::Uniform;
 
     double source(Point3D p) const {
         (void)p;
@@ -72,32 +113,50 @@ struct ScreenedPoisson3D {
 
     // Green's function for screened Poisson operator on 3D spherical domain
     double green(Sphere3D sphere, Point3D x, Point3D y) const {
-        double r = dist(x, y);
+        const double r = dist(x, y);
         assert(r > 0.0);
-        double prod = r * alpha;
-        double prod_R = sphere.radius * alpha;
-        return (std::sinh(prod_R - prod)) / (4*M_PI * r * std::sinh(prod_R));
+        return screened::green_3d(alpha, sphere.radius, r);
     }
 
     // weight factor
     double screening_factor(double radius) const {
-        double prod = radius * alpha;
-        if (prod < 1e-8) return 1.0;
-        return prod / std::sinh(prod);
+        return screened::weight_3d(alpha, radius);
+    }
+
+    double green_mass(double radius) const {
+        return screened::mass_3d(alpha, radius);
+    }
+
+    Point3D sample_green(Sphere3D sphere, PRNG &rng) const {
+        const double radius = screened::sample_radius_3d(alpha, sphere.radius, rng);
+        const double z = 2.0 * rng.unit() - 1.0;
+        const double angle = 2.0 * screened::pi * rng.unit();
+        const double xy = std::sqrt(1.0 - z * z);
+        return Point3D{
+            sphere.centre.x + radius * xy * std::cos(angle),
+            sphere.centre.y + radius * xy * std::sin(angle),
+            sphere.centre.z + radius * z,
+        };
     }
 };
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed) {
-    return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, ScreenedPoisson2D{}, seed);
+           uint64_t seed, double alpha, SourceMode source_mode) {
+    const double effective_eps = screened_epsilon(rank, eps, alpha);
+    return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, effective_eps,
+                  max_steps, max_ray_attempts,
+                  ScreenedPoisson2D{alpha, source_mode}, seed,
+                  true, alpha, source_mode);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed) {
-    return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, ScreenedPoisson3D{}, seed);
+           uint64_t seed, double alpha, SourceMode source_mode) {
+    const double effective_eps = screened_epsilon(rank, eps, alpha);
+    return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, effective_eps,
+                  max_steps, max_ray_attempts,
+                  ScreenedPoisson3D{alpha, source_mode}, seed,
+                  true, alpha, source_mode);
 }
 
 }   // anonymous namespace
@@ -108,3 +167,5 @@ const Equation screened_poisson = {
     run_2D,
     run_3D,
 };
+
+}  // namespace wos

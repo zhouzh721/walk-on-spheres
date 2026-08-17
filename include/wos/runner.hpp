@@ -13,6 +13,7 @@
 #include "wos/inside.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
+#include "wos/source_mode.hpp"
 #include "wos/wos.hpp"
 
 namespace wos {
@@ -21,7 +22,9 @@ namespace wos {
 template<int N, typename Eq>
 int run(int rank, int size, const char *mesh_filename, const char *output_filename,
         int Nx, int Ny, int Nz, int N_walks, double epsilon, int max_steps,
-        int max_ray_attempts, const Eq &eq, std::uint64_t global_seed) {
+        int max_ray_attempts, const Eq &eq, std::uint64_t global_seed,
+        bool write_screened_metadata = false, double alpha = 0.0,
+        SourceMode source_mode = SourceMode::Uniform) {
     Mesh<N> domain;
     int mesh_ok = 1;
     if (rank == 0) {
@@ -291,7 +294,8 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                        N == 3, max_ray_attempts,
                        global_ambiguous_ray_retries,
                        global_indeterminate_points,
-                       global_seed);
+                       global_seed, write_screened_metadata,
+                       alpha, source_mode);
     if (!write_ok) {
         if (rank == 0) {
             std::fprintf(stderr, "Failed writing results to %s.\n", output_filename);
