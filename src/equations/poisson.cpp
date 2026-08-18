@@ -3,7 +3,9 @@
 #include <cmath>
 #include "equations.hpp"
 #include "wos/mesh.hpp"
+#include "wos/poisson.hpp"
 #include "wos/runner.hpp"
+#include "wos/source_mode.hpp"
 #include "wos/wos.hpp"
 
 namespace wos {
@@ -13,7 +15,9 @@ namespace {
 struct Poisson2D {
     [[maybe_unused]] static constexpr bool has_source = true;
     [[maybe_unused]] static constexpr bool has_screening = false;
-    [[maybe_unused]] static constexpr bool has_green_source = false;
+    [[maybe_unused]] static constexpr bool has_green_source = true;
+
+    SourceMode source_mode = SourceMode::Uniform;
 
     static constexpr double load_x = 0.0;
     static constexpr double load_y = 0.0;
@@ -48,16 +52,32 @@ struct Poisson2D {
 
     // Green's function for Laplace operator on 2D spherical domain
     double green(Sphere2D sphere, Point2D x, Point2D y) const {
-        double r = dist(x, y);
+        const double r = dist(x, y);
         assert(r > 0.0);
-        return std::log(sphere.radius / r) / (2*M_PI);
+        return poisson_green::green_2d(sphere.radius, r);
+    }
+
+    double green_mass(double radius) const {
+        return poisson_green::mass_2d(radius);
+    }
+
+    Point2D sample_green(Sphere2D sphere, PRNG &rng) const {
+        const double radius = poisson_green::sample_radius_2d(
+            sphere.radius, rng);
+        const double angle = 2.0 * poisson_green::pi * rng.unit();
+        return Point2D{
+            sphere.centre.x + radius * std::cos(angle),
+            sphere.centre.y + radius * std::sin(angle),
+        };
     }
 };
 
 struct Poisson3D {
     [[maybe_unused]] static constexpr bool has_source = true;
     [[maybe_unused]] static constexpr bool has_screening = false;
-    [[maybe_unused]] static constexpr bool has_green_source = false;
+    [[maybe_unused]] static constexpr bool has_green_source = true;
+
+    SourceMode source_mode = SourceMode::Uniform;
 
     double source(Point3D p) const {
         (void)p;
@@ -74,9 +94,26 @@ struct Poisson3D {
 
     // Green's function for Laplace operator on 3D spherical domain
     double green(Sphere3D sphere, Point3D x, Point3D y) const {
-        double r = dist(x, y);
+        const double r = dist(x, y);
         assert(r > 0.0);
-        return (sphere.radius - r) / (4*M_PI * r * sphere.radius);
+        return poisson_green::green_3d(sphere.radius, r);
+    }
+
+    double green_mass(double radius) const {
+        return poisson_green::mass_3d(radius);
+    }
+
+    Point3D sample_green(Sphere3D sphere, PRNG &rng) const {
+        const double radius = poisson_green::sample_radius_3d(
+            sphere.radius, rng);
+        const double z = 2.0 * rng.unit() - 1.0;
+        const double angle = 2.0 * poisson_green::pi * rng.unit();
+        const double xy = std::sqrt(1.0 - z * z);
+        return Point3D{
+            sphere.centre.x + radius * xy * std::cos(angle),
+            sphere.centre.y + radius * xy * std::sin(angle),
+            sphere.centre.z + radius * z,
+        };
     }
 };
 
@@ -84,17 +121,17 @@ int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int
            int N_walks, double eps, int max_steps, int max_ray_attempts,
            uint64_t seed, double alpha, SourceMode source_mode) {
     (void)alpha;
-    (void)source_mode;
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Poisson2D{}, seed);
+                  max_steps, max_ray_attempts, Poisson2D{source_mode}, seed,
+                  true, 0.0, source_mode);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
            uint64_t seed, double alpha, SourceMode source_mode) {
     (void)alpha;
-    (void)source_mode;
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Poisson3D{}, seed);
+                  max_steps, max_ray_attempts, Poisson3D{source_mode}, seed,
+                  true, 0.0, source_mode);
 }
 
 }   // anonymous namespace

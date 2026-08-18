@@ -2,14 +2,20 @@ add_executable(wos_welding_level0
     src/level0_cooling.cpp
 )
 
-target_include_directories(wos_welding_level0
-    PRIVATE include
+add_executable(wos_welding_level1
+    src/level1_stationary_heat.cpp
 )
 
-target_compile_definitions(wos_welding_level0
-    PRIVATE WELDING_RESULTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/results"
-)
+foreach(welding_target IN ITEMS wos_welding_level0 wos_welding_level1)
+    target_include_directories(${welding_target}
+        PRIVATE include
+    )
 
-target_link_libraries(wos_welding_level0
-    PRIVATE wos_core
-)
+    target_compile_definitions(${welding_target}
+        PRIVATE WELDING_RESULTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/results"
+    )
+
+    target_link_libraries(${welding_target}
+        PRIVATE wos_core
+    )
+endforeach()

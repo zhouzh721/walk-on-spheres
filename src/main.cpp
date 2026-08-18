@@ -34,8 +34,8 @@ static void print_usage(const char *program) {
         "      --alpha X      screened Poisson coefficient (default: 5;\n"
         "                     screened_poisson only)\n"
         "      --source-mode MODE\n"
-        "                     screened source sampling: uniform or green\n"
-        "                     (screened_poisson only)\n"
+        "                     Poisson source sampling: uniform or green\n"
+        "                     (poisson and screened_poisson)\n"
         "      --force        allow an existing output file to be overwritten\n"
         "  -h, --help         show this help message\n",
         program
@@ -304,16 +304,20 @@ int main(int argc, char **argv) {
     }
     const Equation *eq = equation_registry[eq_idx];
 
-    if (rank == 0 && eq != &screened_poisson) {
+    if (rank == 0) {
         if (alpha_provided) {
-            std::fprintf(stderr,
-                         "Warning: --alpha applies only to screened_poisson; "
-                         "it will be ignored for equation '%s'.\n",
-                         eq->name);
+            if (eq != &screened_poisson) {
+                std::fprintf(stderr,
+                             "Warning: --alpha applies only to screened_poisson; "
+                             "it will be ignored for equation '%s'.\n",
+                             eq->name);
+            }
         }
-        if (source_mode_provided) {
+        if (source_mode_provided &&
+            eq != &poisson && eq != &screened_poisson) {
             std::fprintf(stderr,
-                         "Warning: --source-mode applies only to screened_poisson; "
+                         "Warning: --source-mode applies only to poisson and "
+                         "screened_poisson; "
                          "it will be ignored for equation '%s'.\n",
                          eq->name);
         }

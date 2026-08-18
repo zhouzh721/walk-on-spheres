@@ -6,5 +6,7 @@
 !src/
 !src/**
 !CMakeLists.txt
+!README.md
 !tools/
 !tools/**
+tools/__pycache__/

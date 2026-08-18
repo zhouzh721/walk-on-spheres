@@ -23,7 +23,7 @@ template<int N, typename Eq>
 int run(int rank, int size, const char *mesh_filename, const char *output_filename,
         int Nx, int Ny, int Nz, int N_walks, double epsilon, int max_steps,
         int max_ray_attempts, const Eq &eq, std::uint64_t global_seed,
-        bool write_screened_metadata = false, double alpha = 0.0,
+        bool write_source_metadata = false, double alpha = 0.0,
         SourceMode source_mode = SourceMode::Uniform) {
     Mesh<N> domain;
     int mesh_ok = 1;
@@ -294,7 +294,7 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                        N == 3, max_ray_attempts,
                        global_ambiguous_ray_retries,
                        global_indeterminate_points,
-                       global_seed, write_screened_metadata,
+                       global_seed, write_source_metadata,
                        alpha, source_mode);
     if (!write_ok) {
         if (rank == 0) {

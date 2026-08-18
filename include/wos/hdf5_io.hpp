@@ -29,7 +29,7 @@ inline bool wos_write_hdf5(const char *filename,
                            long long ambiguous_ray_retries,
                            long long indeterminate_points,
                            std::uint64_t seed,
-                           bool write_screened_metadata,
+                           bool write_source_metadata,
                            double alpha,
                            SourceMode source_mode)
 {
@@ -313,7 +313,7 @@ inline bool wos_write_hdf5(const char *filename,
             write_scalar("indeterminate_points", H5T_NATIVE_LLONG,
                          &indeterminate_points);
     }
-    if (write_screened_metadata) {
+    if (write_source_metadata) {
         const int source_mode_value = static_cast<int>(source_mode);
         metadata_ok =
             metadata_ok &&

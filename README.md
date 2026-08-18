@@ -46,6 +46,10 @@ decomposition for an otherwise identical run.
 Examples:
 
 ```bash
+# 2D Poisson with Green-function source importance sampling
+mpirun -np 8 ./build/wos poisson 64 64 meshes/unit_circle.obj \
+  --source-mode green --output results/circle_poisson_green_64.h5
+
 # 2D screened Poisson on the annulus, 64x64 grid, 8 ranks
 mpirun -np 8 ./build/wos screened_poisson 64 64 meshes/annulus.obj \
   --output results/annulus_screened_poisson_64.h5
@@ -79,6 +83,10 @@ python plot.py results/run.h5 --mesh meshes/annulus.obj --field mean_steps
 ```
 
 The same file stores `N_walks`, `epsilon`, and `seed` under `/metadata`.
+Poisson and screened Poisson results additionally store `source_mode`; they
+also store `alpha`, which is `0` for Poisson and the requested screening
+coefficient for screened Poisson. Source mode `0` is uniform ball sampling and
+mode `1` is Green-function importance sampling.
 `plot.py` can still visualise `mean` from older files whose solution dataset is
 named `u`.
 
@@ -105,6 +113,14 @@ actual number of walks. It does not rerun WoS or require MPI.
 
 ## Adding a new equation
 Each equation lives in its own `src/equations/<name>.cpp` and is registered in `src/equations/equations.hpp`. When creating a new equation, the relevant files need to be added to the CMakeLists.txt.
+
+## Welding heat experiments
+
+The optional `apps/welding` application contains the staged transient-cooling
+and stationary Gaussian heat-source verification cases used to develop welding
+temperature simulation. See
+[`apps/welding/README.md`](apps/welding/README.md) for the model assumptions,
+build commands, outputs, and validation workflow.
 
 ## Custom continuous geometry
 
