@@ -8,7 +8,6 @@ tmp/
 output/
 results/
 docs/
-tools/
 geometry_configs/
 meshes/
 tests/

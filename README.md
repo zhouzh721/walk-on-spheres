@@ -43,43 +43,16 @@ Random paths use a seed generated from the current time by default. Pass
 are derived from global grid indices, so a fixed seed is independent of MPI rank
 decomposition for an otherwise identical run.
 
-Each inside grid point uses 10000 WoS paths by default. Use `--walks <positive
-integer>` to change the Monte Carlo sample count. Paths stop within a boundary
-distance of `0.01` by default; use `--epsilon <positive finite number>` to
-change that tolerance.
-
-Each path is limited to 1000 sphere steps by default. Use `--max-steps <positive
-integer>` to choose another safety limit. A path that reaches the limit is
-finished using the nearest boundary value and counted in the run metadata.
-
-For 3D point classification, edge or vertex ray hits are discarded and retried.
-Use `--max-ray-attempts <integer >= 3>` to change the default limit of 12.
-Points that still lack three valid rays are saved with location code `3`
-(`Indeterminate`) and are not evaluated by WoS. This option and its diagnostics
-do not apply to 2D.
-
-For `screened_poisson`, use `--alpha <positive number>` to set the screening
-coefficient (default `5`). Its unit is the inverse of the mesh coordinate unit.
-To limit the screened boundary-layer stopping bias, the solver uses
-`min(epsilon, 0.05 / alpha)` as the effective stopping distance. It reports the
-adjustment when this is smaller than the requested `epsilon`, and the HDF5
-metadata records the effective value used by the walk.
-The source integral uses uniform volume sampling by default. Pass
-`--source-mode green` to sample proportionally to the ball Green function;
-`--source-mode uniform` keeps the original estimator.
-
 Examples:
 
 ```bash
 # 2D screened Poisson on the annulus, 64x64 grid, 8 ranks
 mpirun -np 8 ./build/wos screened_poisson 64 64 meshes/annulus.obj \
-  --alpha 5 --source-mode green \
   --output results/annulus_screened_poisson_64.h5
 
 # Reproducible 2D Laplace run
 mpirun -np 8 ./build/wos laplace 64 64 meshes/annulus.obj \
-  --seed 12345 --walks 20000 --epsilon 0.005 \
-  --output results/annulus_laplace_seed_12345.h5
+  --seed 12345 --output results/annulus_laplace_seed_12345.h5
 
 # 3D screened Poisson on the sphere, 32x32x32 grid
 mpirun -np 8 ./build/wos screened_poisson 32 32 32 meshes/sphere.obj \
@@ -96,8 +69,7 @@ python plot.py --mesh meshes/annulus.obj wos.h5
 
 Each new HDF5 result contains the datasets `mean`, `variance`,
 `standard_error`, `mean_steps`, and `location`. Location codes are `0` for
-outside, `1` for inside, `2` for boundary, and `3` for indeterminate 3D points.
-Select a numerical result with
+outside, `1` for inside, and `2` for boundary. Select a numerical result with
 `--field`; `mean` is the default:
 
 ```bash
@@ -106,11 +78,7 @@ python plot.py results/run.h5 --mesh meshes/annulus.obj --field standard_error
 python plot.py results/run.h5 --mesh meshes/annulus.obj --field mean_steps
 ```
 
-The same file stores `N_walks`, `epsilon`, `max_steps`, `max_steps_hits`, and
-`seed` under `/metadata`. 3D files additionally store `max_ray_attempts`,
-`ambiguous_ray_retries`, and `indeterminate_points`.
-Screened Poisson files also store `alpha` and `source_mode`, where source mode
-`0` is uniform volume sampling and `1` is Green-function sampling.
+The same file stores `N_walks`, `epsilon`, and `seed` under `/metadata`.
 `plot.py` can still visualise `mean` from older files whose solution dataset is
 named `u`.
 
@@ -148,8 +116,6 @@ meshes consumed by the solver:
 
 Both sample counts are configurable. See [docs/custom_geometry.md](docs/custom_geometry.md)
 for config formats, examples, topology checks, and command-line overrides.
-OBJ vertex references consumed by the solver and visualisation tools must use
-positive 1-based indices. Negative relative OBJ indices are rejected.
 
 Preview any generated 2D or 3D OBJ independently of solver output:
 

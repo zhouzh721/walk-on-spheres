@@ -37,3 +37,10 @@ add_executable(wos
 )
 target_include_directories(wos PRIVATE src)
 target_link_libraries(wos PRIVATE wos_core)
+
+# Standalone transient-heat experiments for welding applications.  This is
+# intentionally kept separate from the original steady-state `wos` program.
+option(WOS_BUILD_WELDING "Build the welding transient-heat experiments" ON)
+if(WOS_BUILD_WELDING)
+    add_subdirectory(apps/welding)
+endif()

@@ -1,0 +1,10 @@
+# Only publish the welding C++ interface and implementation directories.
+*
+!.gitignore
+!include/
+!include/**
+!src/
+!src/**
+!CMakeLists.txt
+!tools/
+!tools/**
