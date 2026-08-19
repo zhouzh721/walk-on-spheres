@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "wos/mesh.hpp"
+#include "wos/prng.hpp"
 
 namespace welding {
 
@@ -35,11 +36,41 @@ public:
     }
 
     double volumetric_power_density(wos::Point2D point) const {
-        const double dx = (point.x - centre_x_) / sigma_x_;
-        const double dy = (point.y - centre_y_) / sigma_y_;
-        const double shape = std::exp(-0.5 * (dx * dx + dy * dy));
-        return absorbed_power_ * shape /
+        return absorbed_power_ * spatial_shape(point) /
                (thickness_ * integral_x_ * integral_y_);
+    }
+
+    // Probability density proportional to the complete finite-plate source.
+    // This is a proposal only: it does not truncate or alter q''' itself.
+    double spatial_probability_density(wos::Point2D point) const {
+        if (point.x < xmin_ || point.x > xmax_ ||
+            point.y < ymin_ || point.y > ymax_) {
+            return 0.0;
+        }
+        return spatial_shape(point) / (integral_x_ * integral_y_);
+    }
+
+    // Rejection from the untruncated bivariate normal yields the exactly
+    // normalized finite-rectangle Gaussian density above.
+    wos::Point2D sample_spatial_distribution(wos::PRNG &rng) const {
+        constexpr double two_pi =
+            6.28318530717958647692528676655900577;
+        constexpr int max_attempts = 1'000'000;
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            const double magnitude =
+                std::sqrt(-2.0 * std::log(rng.unit_open()));
+            const double angle = two_pi * rng.unit();
+            const wos::Point2D point{
+                centre_x_ + sigma_x_ * magnitude * std::cos(angle),
+                centre_y_ + sigma_y_ * magnitude * std::sin(angle),
+            };
+            if (point.x >= xmin_ && point.x <= xmax_ &&
+                point.y >= ymin_ && point.y <= ymax_) {
+                return point;
+            }
+        }
+        throw std::runtime_error(
+            "finite-plate Gaussian rejection sampler did not accept a point");
     }
 
     double integrated_power_midpoint(int nx, int ny) const {
@@ -72,6 +103,12 @@ public:
     double sigma_y() const { return sigma_y_; }
 
 private:
+    double spatial_shape(wos::Point2D point) const {
+        const double dx = (point.x - centre_x_) / sigma_x_;
+        const double dy = (point.y - centre_y_) / sigma_y_;
+        return std::exp(-0.5 * (dx * dx + dy * dy));
+    }
+
     static double gaussian_integral(double lower, double upper,
                                     double centre, double sigma) {
         if (!(upper > lower) || !(sigma > 0.0)) {

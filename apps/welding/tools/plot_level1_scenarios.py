@@ -178,9 +178,12 @@ def make_canvas(title: str, subtitle: str, badge: str):
 
 def save_figure(fig: plt.Figure, stem: str) -> None:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-    path = (FIGURE_DIR / stem).with_suffix(".png")
-    fig.savefig(path, dpi=300, bbox_inches="tight", facecolor="white")
-    print(path)
+    base = FIGURE_DIR / stem
+    png_path = base.with_suffix(".png")
+    fig.savefig(png_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(base.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
+    fig.savefig(base.with_suffix(".pdf"), bbox_inches="tight", facecolor="white")
+    print(png_path)
     plt.close(fig)
 
 
@@ -285,26 +288,39 @@ def plot_manufactured() -> None:
     save_figure(fig, "level1a_manufactured_scenario")
 
 
-def plot_gaussian() -> None:
-    field = load_csv("level1_gaussian_field.csv")
+def plot_gaussian(
+    field_name: str = "level1_gaussian_field.csv",
+    summary_name: str = "level1_gaussian_summary.csv",
+    validation_name: str = "level1_gaussian_validation.csv",
+    figure_stem: str = "level1b_gaussian_scenario",
+    title: str = "Level 1B｜固定 Gaussian 焊接热源",
+    subtitle: str = (
+        "有限薄板上的定常局部热输入；功率归一化后，用有限差分参考场验证 WoS"
+    ),
+    badge: str = "全部验证门限 · PASS",
+    condition_title: str = "问题设置（稳态，无时间初值）",
+    baseline_summary: np.void | None = None,
+    baseline_validation: np.void | None = None,
+) -> None:
+    field = load_csv(field_name)
     reference = load_csv("level1_gaussian_reference.csv")
-    summary = load_summary("level1_gaussian_summary.csv")
-    validation = load_summary("level1_gaussian_validation.csv")
+    summary = load_summary(summary_name)
+    validation = load_summary(validation_name)
     x, y, heat_source = as_grid(field, "volumetric_power_density")
     _, _, wos_rise = as_grid(field, "temperature_rise")
     _, _, standard_error = as_grid(field, "standard_error")
     _, _, reference_rise = as_grid(reference, "reference_temperature_rise")
-    _, _, error = as_grid(reference, "error")
+    error = wos_rise - reference_rise
     x_mm = 1000.0 * x
     y_mm = 1000.0 * y
     fig, condition_axis, source_axis, map_axes, line_axes, cards = make_canvas(
-        "Level 1B｜固定 Gaussian 焊接热源",
-        "有限薄板上的定常局部热输入；功率归一化后，用有限差分参考场验证 WoS",
-        "全部验证门限 · PASS",
+        title,
+        subtitle,
+        badge,
     )
 
     condition_card(
-        condition_axis, "问题设置（稳态，无时间初值）",
+        condition_axis, condition_title,
         ["板 120 × 80 × 6 mm；k = 35 W/(m·K)",
          "四边界：T = 293.15 K", "电功率 800 W；效率 75%；吸收 600 W",
          "中心 (60, 40) mm；σx = σy = 6 mm"],
@@ -349,31 +365,80 @@ def plot_gaussian() -> None:
     panel_label(line_axes[0], "f")
     panel_label(line_axes[1], "g")
 
+    peak_detail = f"峰值温升 {float(summary['peak_temperature_rise']):.2f} K"
+    rmse_detail = f"绝对 RMSE {float(validation['field_rmse']):.03f} K"
+    peak_se_detail = "Monte Carlo 标准误"
+    time_detail = "仅计 WoS 场求解；单 MPI rank"
+    if baseline_summary is not None and baseline_validation is not None:
+        se_reduction = 100.0 * (
+            1.0
+            - float(summary["peak_standard_error"])
+            / float(baseline_summary["peak_standard_error"])
+        )
+        time_increase = 100.0 * (
+            float(summary["solve_seconds"])
+            / float(baseline_summary["solve_seconds"])
+            - 1.0
+        )
+        peak_detail += "；峰值位于热源中心"
+        rmse_detail += (
+            f"；Green {float(baseline_validation['field_rmse']):.03f} K"
+        )
+        peak_se_detail = (
+            f"Green {float(baseline_summary['peak_standard_error']):.2f} K；"
+            f"降低 {se_reduction:.1f}%"
+        )
+        time_detail = (
+            f"Green {float(baseline_summary['solve_seconds']):.3f} s；"
+            f"增加 {time_increase:.1f}%"
+        )
+
     metric_card(cards[0], "峰值温度", f"{float(summary['peak_temperature']):.2f} K",
-                "峰值温升 919.93 K", BLUE)
+                peak_detail, BLUE)
     metric_card(cards[1], "全场归一化 RMSE",
                 f"{100.0 * float(validation['field_normalized_rmse']):.3f}%",
-                f"绝对 RMSE {float(validation['field_rmse']):.03f} K", ORANGE)
+                rmse_detail, ORANGE)
     metric_card(cards[2], "峰值标准误",
                 f"{float(summary['peak_standard_error']):.2f} K",
-                "Monte Carlo 标准误", TEAL)
+                peak_se_detail, TEAL)
     metric_card(cards[3], "功率守恒误差",
                 f"{float(summary['power_relative_error']):.2e}",
                 "积分功率 600.000 W", ORANGE)
     metric_card(cards[4], "求解耗时", f"{float(summary['solve_seconds']):.3f} s",
-                "仅计 WoS 场求解；单 MPI rank", TEAL, TIME_CARD)
+                time_detail, TEAL, TIME_CARD)
 
     fig.text(0.98, 0.012,
              f"网格 49 × 33；每点 6000 次随机游走；3SE 覆盖率 "
              f"{100.0 * float(validation['within_three_standard_errors_fraction']):.2f}%",
              ha="right", va="bottom", fontsize=7.5, color=MUTED)
-    save_figure(fig, "level1b_gaussian_scenario")
+    save_figure(fig, figure_stem)
+
+
+def plot_gaussian_mis() -> None:
+    baseline_summary = load_summary("level1_gaussian_summary.csv")
+    baseline_validation = load_summary("level1_gaussian_validation.csv")
+    plot_gaussian(
+        field_name="level1_gaussian_mis_field.csv",
+        summary_name="level1_gaussian_mis_summary.csv",
+        validation_name="level1_gaussian_mis_validation.csv",
+        figure_stem="level1b_gaussian_mis_scenario",
+        title="Level 1B｜固定 Gaussian 热源 · Green–Source MIS",
+        subtitle=(
+            "全域 Gaussian 源 proposal 与球内 Green proposal 混合；"
+            "在保持无偏的同时降低温度场 Monte Carlo 方差"
+        ),
+        badge="MIS 验证门限 · PASS",
+        condition_title="问题设置｜Green–Source MIS（β = 0.5）",
+        baseline_summary=baseline_summary,
+        baseline_validation=baseline_validation,
+    )
 
 
 def main() -> None:
     configure_style()
     plot_manufactured()
     plot_gaussian()
+    plot_gaussian_mis()
 
 
 if __name__ == "__main__":

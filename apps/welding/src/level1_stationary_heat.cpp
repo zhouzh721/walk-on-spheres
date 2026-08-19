@@ -137,6 +137,7 @@ struct StationaryGaussianHeat2D {
     const welding::GaussianHeatSource2D &heat_source;
     double conductivity;
     wos::SourceMode source_mode = wos::SourceMode::Green;
+    double mis_green_probability = 0.5;
 
     // The Gaussian is normalized on the complete finite plate and therefore
     // has nonzero mathematical support everywhere in the plate.
@@ -174,6 +175,18 @@ struct StationaryGaussianHeat2D {
             sphere.centre.x + radius * std::cos(angle),
             sphere.centre.y + radius * std::sin(angle),
         };
+    }
+
+    wos::Point2D sample_source_proposal(wos::PRNG &rng) const {
+        return heat_source.sample_spatial_distribution(rng);
+    }
+
+    double source_proposal_pdf(wos::Point2D point) const {
+        return heat_source.spatial_probability_density(point);
+    }
+
+    double source_mis_green_probability() const {
+        return mis_green_probability;
     }
 };
 
@@ -455,7 +468,9 @@ void write_gaussian_outputs(const wos::Grid &grid,
                             const welding::GaussianHeatSource2D &heat_source,
                             const StationaryGaussianHeat2D &equation,
                             const FieldSolution &solution,
-                            double solve_seconds) {
+                            double solve_seconds,
+                            const std::string &file_stem,
+                            const char *sampling_label) {
     const PeakLocation peak = find_peak(grid, solution.mean);
     const double integrated_power = heat_source.integrated_power_midpoint(800, 600);
     const double relative_power_error = std::abs(
@@ -465,13 +480,14 @@ void write_gaussian_outputs(const wos::Grid &grid,
         grid, solution.mean, solution.standard_error, peak.value);
 
     const std::filesystem::path summary_path =
-        data_directory() / "level1_gaussian_summary.csv";
+        data_directory() / (file_stem + "_summary.csv");
     std::ofstream summary(summary_path);
     if (!summary) {
         throw std::runtime_error("could not open " + summary_path.string());
     }
     summary << std::setprecision(17);
-    summary << "length_x,length_y,thickness,conductivity,ambient_temperature,"
+    summary << "source_mode,mis_green_probability,length_x,length_y,thickness,"
+               "conductivity,ambient_temperature,"
                "electrical_power,efficiency,absorbed_power,source_x,source_y,"
                "sigma_x,sigma_y,gaussian_integral_x,gaussian_integral_y,"
                "peak_power_density,integrated_power,power_relative_error,"
@@ -480,7 +496,9 @@ void write_gaussian_outputs(const wos::Grid &grid,
                "symmetry_max_relative_residual,symmetry_rms_relative_residual,"
                "symmetry_within_three_standard_errors_fraction,mean_standard_error,"
                "max_standard_error,mean_steps,max_steps_hits,solve_seconds\n";
-    summary << config.length_x << ',' << config.length_y << ','
+    summary << static_cast<int>(equation.source_mode) << ','
+            << equation.mis_green_probability << ','
+            << config.length_x << ',' << config.length_y << ','
             << config.thickness << ',' << config.conductivity << ','
             << config.ambient_temperature << ',' << config.electrical_power << ','
             << config.efficiency << ',' << heat_source.absorbed_power() << ','
@@ -501,9 +519,9 @@ void write_gaussian_outputs(const wos::Grid &grid,
             << solution.max_steps_hits << ',' << solve_seconds << '\n';
 
     const std::filesystem::path field_path =
-        data_directory() / "level1_gaussian_field.csv";
+        data_directory() / (file_stem + "_field.csv");
     const std::filesystem::path centerlines_path =
-        data_directory() / "level1_gaussian_centerlines.csv";
+        data_directory() / (file_stem + "_centerlines.csv");
     std::ofstream field(field_path);
     std::ofstream centerlines(centerlines_path);
     if (!field || !centerlines) {
@@ -549,7 +567,8 @@ void write_gaussian_outputs(const wos::Grid &grid,
         }
     }
 
-    std::printf("Level 1B: stationary finite-domain Gaussian heat source\n");
+    std::printf("Level 1B: stationary finite-domain Gaussian heat source (%s)\n",
+                sampling_label);
     std::printf("  absorbed power:       %.9g W\n", heat_source.absorbed_power());
     std::printf("  integrated power:     %.9g W\n", integrated_power);
     std::printf("  relative power error: %.6g\n", relative_power_error);
@@ -611,19 +630,40 @@ int run_level1() {
         config.electrical_power, config.efficiency,
         0.5 * config.length_x, 0.5 * config.length_y,
         config.sigma_x, config.sigma_y);
-    const StationaryGaussianHeat2D gaussian{
+    const StationaryGaussianHeat2D gaussian_green{
         heat_source,
         config.conductivity,
+        wos::SourceMode::Green,
+        0.5,
     };
-    const auto gaussian_start = std::chrono::steady_clock::now();
-    const FieldSolution gaussian_solution = solve_field(
-        grid, *bvh, starts, gaussian, config,
+    const auto gaussian_green_start = std::chrono::steady_clock::now();
+    const FieldSolution gaussian_green_solution = solve_field(
+        grid, *bvh, starts, gaussian_green, config,
         0x4C4556454C314247ULL);
-    const double gaussian_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - gaussian_start).count();
+    const double gaussian_green_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - gaussian_green_start).count();
     write_gaussian_outputs(
-        grid, config, heat_source, gaussian, gaussian_solution,
-        gaussian_seconds);
+        grid, config, heat_source, gaussian_green, gaussian_green_solution,
+        gaussian_green_seconds, "level1_gaussian", "Green baseline");
+
+    // Use the same case stream as the baseline. Walk and source RNGs are
+    // independent, so both methods see identical WoS paths while their source
+    // draws follow their respective proposals.
+    const StationaryGaussianHeat2D gaussian_mis{
+        heat_source,
+        config.conductivity,
+        wos::SourceMode::GreenSourceMIS,
+        0.5,
+    };
+    const auto gaussian_mis_start = std::chrono::steady_clock::now();
+    const FieldSolution gaussian_mis_solution = solve_field(
+        grid, *bvh, starts, gaussian_mis, config,
+        0x4C4556454C314247ULL);
+    const double gaussian_mis_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - gaussian_mis_start).count();
+    write_gaussian_outputs(
+        grid, config, heat_source, gaussian_mis, gaussian_mis_solution,
+        gaussian_mis_seconds, "level1_gaussian_mis", "Green-source MIS");
 
     std::printf("Finished. Results are in %s\n", data_directory().string().c_str());
     return 0;

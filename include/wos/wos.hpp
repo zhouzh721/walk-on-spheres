@@ -3,6 +3,7 @@
 #include "wos/bvh.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
+#include "wos/source_sampling.hpp"
 #include "wos/source_mode.hpp"
 #include "wos/wos_result.hpp"
 
@@ -78,6 +79,16 @@ SampleResult wos_sample(const BVH<N> &bvh, Point<N> p0, const StartPoint<N> &sta
                         if (source_value != 0.0) {
                             sample += weight * eq.green_mass(sphere.radius)
                                     * source_value;
+                        }
+                    } else if (eq.source_mode == SourceMode::GreenSourceMIS) {
+                        if constexpr (source_sampling::has_source_proposal_v<
+                                          Eq, Point<N>>) {
+                            sample += weight *
+                                source_sampling::green_source_mis_contribution(
+                                    eq, sphere, source_rng);
+                        } else {
+                            throw std::invalid_argument(
+                                "GreenSourceMIS requires a source proposal sampler and PDF");
                         }
                     } else {
                         Point<N> sp = sphere_sample(sphere, source_rng);

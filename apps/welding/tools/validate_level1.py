@@ -235,6 +235,156 @@ def main() -> None:
             ]
         )
 
+    mis_summary = load_csv(DATA_DIR / "level1_gaussian_mis_summary.csv")
+    mis_field = load_csv(DATA_DIR / "level1_gaussian_mis_field.csv")
+    mis_x, mis_y, mis_rise = structured_field(mis_field, "temperature_rise")
+    _, _, mis_standard_error = structured_field(mis_field, "standard_error")
+    if not np.array_equal(mis_x, coarse_x) or not np.array_equal(mis_y, coarse_y):
+        raise RuntimeError("Green and MIS fields use different grids")
+
+    mis_error = mis_rise - reference
+    mis_interior_error = mis_error[interior]
+    mis_rmse = float(np.sqrt(np.mean(mis_interior_error**2)))
+    mis_normalized_rmse = mis_rmse / reference_peak
+    mis_max_absolute_error = float(np.max(np.abs(mis_interior_error)))
+    mis_peak = float(np.max(mis_rise))
+    mis_centre_error = float(mis_error[centre])
+    mis_centre_standard_error = float(mis_standard_error[centre])
+    mis_peak_index = np.unravel_index(np.argmax(mis_rise), mis_rise.shape)
+    mis_peak_location_error = float(
+        np.hypot(mis_x[mis_peak_index[0]] - source_x,
+                 mis_y[mis_peak_index[1]] - source_y)
+    )
+    mis_within_three_se = float(
+        np.mean(
+            np.abs(mis_interior_error)
+            <= 3.0 * np.maximum(
+                mis_standard_error[interior], np.finfo(float).eps
+            )
+        )
+    )
+    mis_centre_limit = max(
+        3.0 * mis_centre_standard_error, 0.03 * reference_peak
+    )
+    mis_gates = {
+        "power": scalar(mis_summary, "power_relative_error") < 1e-6,
+        "field_nrmse": mis_normalized_rmse < 0.05,
+        "centre": abs(mis_centre_error) <= mis_centre_limit,
+        "peak_location": mis_peak_location_error <= peak_location_limit,
+        "symmetry": (
+            scalar(mis_summary, "symmetry_rms_relative_residual") < 0.02
+            and scalar(
+                mis_summary, "symmetry_within_three_standard_errors_fraction"
+            )
+            > 0.99
+        ),
+        "max_steps": scalar(mis_summary, "max_steps_hits") == 0.0,
+    }
+
+    mis_validation_path = DATA_DIR / "level1_gaussian_mis_validation.csv"
+    with mis_validation_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "fd_refinement",
+                "fd_iterations",
+                "fd_relative_residual",
+                "wos_peak_rise",
+                "reference_peak_rise",
+                "field_rmse",
+                "field_normalized_rmse",
+                "field_max_absolute_error",
+                "centre_error",
+                "centre_standard_error",
+                "peak_location_error",
+                "peak_location_limit",
+                "within_three_standard_errors_fraction",
+                "power_gate",
+                "field_nrmse_gate",
+                "centre_gate",
+                "peak_location_gate",
+                "symmetry_gate",
+                "max_steps_gate",
+                "all_gates",
+            ]
+        )
+        writer.writerow(
+            [
+                refinement,
+                iterations,
+                f"{relative_residual:.17g}",
+                f"{mis_peak:.17g}",
+                f"{reference_peak:.17g}",
+                f"{mis_rmse:.17g}",
+                f"{mis_normalized_rmse:.17g}",
+                f"{mis_max_absolute_error:.17g}",
+                f"{mis_centre_error:.17g}",
+                f"{mis_centre_standard_error:.17g}",
+                f"{mis_peak_location_error:.17g}",
+                f"{peak_location_limit:.17g}",
+                f"{mis_within_three_se:.17g}",
+                *[int(mis_gates[name]) for name in mis_gates],
+                int(all(mis_gates.values())),
+            ]
+        )
+
+    comparison_path = DATA_DIR / "level1_gaussian_sampling_comparison.csv"
+    green_mean_se = scalar(summary, "mean_standard_error")
+    green_time = scalar(summary, "solve_seconds")
+    green_fom = green_mean_se**2 * green_time
+    comparison_rows = [
+        (
+            "green",
+            rmse,
+            normalized_rmse,
+            scalar(summary, "peak_standard_error"),
+            green_mean_se,
+            scalar(summary, "max_standard_error"),
+            centre_error,
+            within_three_se,
+            green_time,
+        ),
+        (
+            "green_source_mis",
+            mis_rmse,
+            mis_normalized_rmse,
+            scalar(mis_summary, "peak_standard_error"),
+            scalar(mis_summary, "mean_standard_error"),
+            scalar(mis_summary, "max_standard_error"),
+            mis_centre_error,
+            mis_within_three_se,
+            scalar(mis_summary, "solve_seconds"),
+        ),
+    ]
+    with comparison_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "method",
+                "field_rmse",
+                "field_normalized_rmse",
+                "peak_standard_error",
+                "mean_standard_error",
+                "max_standard_error",
+                "centre_error",
+                "within_three_standard_errors_fraction",
+                "solve_seconds",
+                "mean_se_reduction_factor_vs_green",
+                "variance_time_efficiency_vs_green",
+            ]
+        )
+        for row in comparison_rows:
+            mean_se = row[4]
+            solve_seconds = row[8]
+            writer.writerow(
+                [
+                    row[0],
+                    *[f"{value:.17g}" for value in row[1:]],
+                    f"{green_mean_se / mean_se:.17g}",
+                    f"{green_fom / (mean_se**2 * solve_seconds):.17g}",
+                ]
+            )
+
     print(f"finite-difference iterations: {iterations}")
     print(f"finite-difference relative residual: {relative_residual:.3e}")
     print(f"WoS/reference peak rise: {wos_peak:.6g} / {reference_peak:.6g} K")
@@ -244,10 +394,33 @@ def main() -> None:
     print(f"points within 3 standard errors: {within_three_se:.2%}")
     for name, passed in gates.items():
         print(f"{name} gate: {'PASS' if passed else 'FAIL'}")
+    print("\nGreen-source MIS comparison")
+    print(f"WoS/reference peak rise: {mis_peak:.6g} / {reference_peak:.6g} K")
+    print(
+        f"field RMSE / normalized RMSE: {mis_rmse:.6g} K / "
+        f"{mis_normalized_rmse:.3%}"
+    )
+    print(
+        f"centre error and standard error: {mis_centre_error:.6g} / "
+        f"{mis_centre_standard_error:.6g} K"
+    )
+    print(f"points within 3 standard errors: {mis_within_three_se:.2%}")
+    print(
+        "mean SE reduction factor: "
+        f"{green_mean_se / scalar(mis_summary, 'mean_standard_error'):.3f}x"
+    )
+    print(
+        "variance-time efficiency: "
+        f"{green_fom / (scalar(mis_summary, 'mean_standard_error')**2 * scalar(mis_summary, 'solve_seconds')):.3f}x"
+    )
+    for name, passed in mis_gates.items():
+        print(f"MIS {name} gate: {'PASS' if passed else 'FAIL'}")
     print(reference_path)
     print(validation_path)
+    print(mis_validation_path)
+    print(comparison_path)
 
-    if not all(gates.values()):
+    if not all(gates.values()) or not all(mis_gates.values()):
         raise SystemExit(1)
 
 
