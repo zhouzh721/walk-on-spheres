@@ -1,8 +1,8 @@
 # Welding heat experiments
 
 The welding application is separate from the original steady-state `wos`
-launcher. It currently contains two validated development levels and a
-Level-2 transient welding baseline.
+launcher. It currently contains four development levels through the validated
+Level-3 moving-source welding baseline.
 
 ## Level 0: transient cooling
 
@@ -100,15 +100,72 @@ error is smaller. Consequently, `dt = 0.1 s` remains the Level-2 default. Use
 a time step below 0.1 s should be paired with history-grid refinement or a
 different history representation.
 
+## Level 3: moving heat source followed by cooling
+
+`wos_welding_level3` keeps the validated Level-2 material model and time
+integration, but replaces the stationary source with a fixed single-pass weld:
+
+- a `0.12 m x 0.08 m x 0.006 m` plate and `97 x 65` query/history grid
+  (`1.25 mm` spacing in both in-plane directions);
+- constant `k = 35 W/(m K)`, `rho = 7800 kg/m3`, and `cp = 600 J/(kg K)`;
+- a finite-plate-normalized Gaussian with `sigma_x = sigma_y = 6 mm`;
+- `800 W` electrical power, `0.75` efficiency, and `600 W` absorbed power;
+- motion from `x = -50 mm` to `x = +50 mm` along `y = 0` at `20 mm/s`
+  during `0--5 s`;
+- complete source shutoff at `5 s`, followed by source-free cooling to `15 s`;
+- `dt = 0.1 s`, cubic history interpolation, and screened-Green sampling.
+
+The plate edges are at `x = +/-60 mm`; the source-centre path ends are
+therefore 10 mm inboard. With the 6 mm characteristic source radius, the
+displayed source circle remains fully inside the plate throughout the pass.
+
+The physical, geometry, trajectory, grid, and time parameters are deliberately
+fixed. Runtime options only select path count, random seed, OpenMP threads,
+field-output stride, and output prefix. Within each outer time step, two-point
+Gauss-Legendre quadrature averages the continuously moving source rather than
+moving it in a single 2 mm jump. Finite-plate normalization is evaluated at
+both temporal quadrature points, giving exactly `3000 J` total input energy.
+
+The run writes complete temperature fields, per-step summaries, metadata, and
+seven grid-aligned thermal-cycle probes. At `t > 5 s`, the absorbed power is
+exactly zero. The `15 s` endpoint is an observation time, not a claim that the
+plate has returned to ambient temperature.
+
+The retained strict baseline uses 1000 paths per point. It took about `1189 s`
+on eight OpenMP threads in the development environment. Against an independent
+`385 x 257`, `dt = 0.1 s` finite-difference reference, it produced:
+
+| Time | Full-field RMSE | Normalized RMSE | Peak-rise relative error |
+| ---: | ---: | ---: | ---: |
+| 0.5 s | 0.0328 K | 0.084% | 0.430% |
+| 2.5 s | 0.0627 K | 0.102% | 0.083% |
+| 5.0 s | 0.0820 K | 0.133% | 0.172% |
+| 8.0 s | 0.0597 K | 0.139% | 0.048% |
+| 10.0 s | 0.0487 K | 0.131% | 0.007% |
+| 12.0 s | 0.0455 K | 0.137% | 0.001% |
+| 15.0 s | 0.0385 K | 0.132% | 0.042% |
+
+All five centreline-probe peak times agreed with the reference at the saved
+`0.1 s` resolution. The most weakly heated transverse probe differed by
+`0.065 K` in peak rise with no peak-time difference. The final centre rise was
+`28.52 K`, confirming that ten seconds of cooling does not return the plate
+to ambient. The strict validator passed without changing simulation outputs or
+relaxing its original `1%` field, `2%` peak, one-cell peak-location, and one-step
+probe-timing gates. The 500-path result remains a useful sensitivity case, but
+fails two strict gates because its propagated random noise cannot resolve a
+very flat off-axis thermal-cycle maximum.
+
 ## Build and run
 
 From the repository root:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j --target wos_welding_level0 wos_welding_level1 wos_welding_level2
+cmake --build build -j --target wos_welding_level0 wos_welding_level1 wos_welding_level2 wos_welding_level3
 ./build/apps/welding/wos_welding_level1
 ./build/apps/welding/wos_welding_level2
+./build/apps/welding/wos_welding_level3 --walks 1000 --threads 8 \
+    --output-prefix apps/welding/results/data/level3_moving_heat_120mm_highres_n1000
 ```
 
 Use `wos_welding_level2 --help` for its grid, time, walk-count, seed, field
@@ -150,7 +207,25 @@ The 101 saved time steps are retained. Temperature and signed-error colour
 limits are fixed over the entire animation so that apparent changes cannot be
 caused by frame-wise rescaling.
 
-All three programs currently accept one MPI rank. Level 1 writes CSV data to
+Validate the retained Level-3 baseline with the independent moving-source FD
+reference:
+
+```bash
+python3 apps/welding/tools/validate_level3.py \
+    --prefix apps/welding/results/data/level3_moving_heat_120mm_highres_n1000 \
+    --reference-refinement 4 --reference-substeps 1
+```
+
+Generate its complete moving-heating and source-off cooling comparison:
+
+```bash
+python3 apps/welding/tools/animate_level3.py \
+    --prefix apps/welding/results/data/level3_moving_heat_120mm_highres_n1000 \
+    --reference-refinement 4 --reference-substeps 1 \
+    --output apps/welding/results/animations/level3_moving_heat_120mm_highres_n1000_comparison.webp
+```
+
+All four programs currently accept one MPI rank. Level 1 writes CSV data to
 `apps/welding/results/data`.
 
 Create the independent finite-difference reference and validate the result:
