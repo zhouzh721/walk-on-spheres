@@ -19,14 +19,16 @@
 
 #include "welding/gaussian_heat_source.hpp"
 #include "welding/rectangular_plate.hpp"
+#include "wos/boundary/condition.hpp"
 #include "wos/bvh.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
 #include "wos/mesh.hpp"
-#include "wos/poisson.hpp"
 #include "wos/prng.hpp"
+#include "wos/sampling/poisson_green.hpp"
+#include "wos/solver/wos.hpp"
 #include "wos/source_mode.hpp"
-#include "wos/wos.hpp"
 
 namespace {
 
@@ -100,9 +102,10 @@ struct ManufacturedPoisson2D {
         return eigenvalue * exact(point);
     }
 
-    double boundary([[maybe_unused]] wos::Point2D point,
-                    [[maybe_unused]] int boundary_id) const {
-        return 0.0;
+    wos::BoundaryCondition boundary(
+            [[maybe_unused]] wos::Point2D point,
+            [[maybe_unused]] int boundary_id) const {
+        return wos::BoundaryCondition::dirichlet(0.0);
     }
 
     double green(wos::Sphere2D sphere, wos::Point2D x,
@@ -149,9 +152,10 @@ struct StationaryGaussianHeat2D {
         return heat_source.volumetric_power_density(point) / conductivity;
     }
 
-    double boundary([[maybe_unused]] wos::Point2D point,
-                    [[maybe_unused]] int boundary_id) const {
-        return 0.0;
+    wos::BoundaryCondition boundary(
+            [[maybe_unused]] wos::Point2D point,
+            [[maybe_unused]] int boundary_id) const {
+        return wos::BoundaryCondition::dirichlet(0.0);
     }
 
     double green(wos::Sphere2D sphere, wos::Point2D x,
@@ -203,9 +207,9 @@ void ensure_directory(const std::filesystem::path &directory) {
     }
 }
 
-std::vector<wos::StartPoint<2>> build_start_points(
+std::vector<wos::solver::StartPoint<2>> build_start_points(
     const wos::Grid &grid, const wos::BVH<2> &bvh) {
-    std::vector<wos::StartPoint<2>> starts(
+    std::vector<wos::solver::StartPoint<2>> starts(
         static_cast<std::size_t>(grid.Nx) * grid.Ny);
     for (int i = 0; i < grid.Nx; ++i) {
         const double x = wos::grid_coordinate(
@@ -214,7 +218,8 @@ std::vector<wos::StartPoint<2>> build_start_points(
             const double y = wos::grid_coordinate(
                 grid.ymin, grid.ymax, j, grid.Ny);
             const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
-            starts[index] = wos::get_start_point(bvh, wos::Point2D{x, y});
+            starts[index] = wos::solver::find_start_point(
+                bvh, wos::Point2D{x, y});
         }
     }
     return starts;
@@ -223,7 +228,7 @@ std::vector<wos::StartPoint<2>> build_start_points(
 template<typename Equation>
 FieldSolution solve_field(const wos::Grid &grid,
                           const wos::BVH<2> &bvh,
-                          const std::vector<wos::StartPoint<2>> &starts,
+                          const std::vector<wos::solver::StartPoint<2>> &starts,
                           const Equation &equation,
                           const Level1Config &config,
                           std::uint64_t case_stream) {
@@ -236,6 +241,8 @@ FieldSolution solve_field(const wos::Grid &grid,
         std::vector<double>(point_count, 0.0),
         0,
     };
+    const wos::solver::WoS solver(
+        {config.walks, config.epsilon, config.max_steps});
 
     for (int i = 1; i < grid.Nx - 1; ++i) {
         const double x = wos::grid_coordinate(
@@ -254,10 +261,9 @@ FieldSolution solve_field(const wos::Grid &grid,
             wos::PRNG source_rng(wos::splitmix64(
                 point_seed ^ 0xA4093822299F31D0ULL));
 
-            const wos::WoSResult result = wos::wos_run(
+            const wos::solver::Result result = solver.solve(
                 bvh, point, starts[index], equation,
-                config.walks, config.epsilon,
-                walk_rng, source_rng, config.max_steps);
+                walk_rng, source_rng);
             solution.mean[index] = result.mean;
             solution.variance[index] = result.variance;
             solution.standard_error[index] = result.standard_error;
@@ -597,7 +603,7 @@ int run_level1() {
     const wos::Mesh<2> mesh = welding::make_rectangular_plate(
         grid.xmin, grid.xmax, grid.ymin, grid.ymax);
     const std::unique_ptr<wos::BVH<2>> bvh = wos::build_bvh(mesh);
-    const std::vector<wos::StartPoint<2>> starts =
+    const std::vector<wos::solver::StartPoint<2>> starts =
         build_start_points(grid, *bvh);
 
     std::printf("Level-1 stationary welding heat verification\n");

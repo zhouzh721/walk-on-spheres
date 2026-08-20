@@ -1,16 +1,14 @@
 #pragma once
 
-namespace wos {
+namespace wos::solver {
 
-// Result produced by one walk-on-spheres path.
 struct SampleResult {
     double value;
     int steps;
     bool max_steps_reached;
 };
 
-// Statistics collected from multiple walk-on-spheres paths.
-struct WoSResult {
+struct Result {
     double mean;
     double variance;
     double standard_error;
@@ -18,4 +16,4 @@ struct WoSResult {
     int max_steps_hits;
 };
 
-}
+} // namespace wos::solver

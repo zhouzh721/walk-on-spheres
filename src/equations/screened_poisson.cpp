@@ -4,11 +4,12 @@
 #include <cmath>
 #include <cstdio>
 #include "equations.hpp"
+#include "wos/boundary/condition.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/mesh.hpp"
 #include "wos/runner.hpp"
-#include "wos/screened.hpp"
+#include "wos/sampling/screened_green.hpp"
 #include "wos/source_mode.hpp"
-#include "wos/wos.hpp"
 
 namespace wos {
 
@@ -60,29 +61,31 @@ struct ScreenedPoisson2D {
         return std::sqrt((p.x-0.45)*(p.x-0.45) + p.y*p.y) <= 0.5 ? 5.0 : 0.0;
     }
 
-    double boundary(Point2D p, int boundary_id) const {
-        return boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0;
+    BoundaryCondition boundary(Point2D p, int boundary_id) const {
+        return BoundaryCondition::dirichlet(
+            boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0);
     }
 
     // Green's function for screened Poisson operator on 2D spherical domain
     double green(Sphere2D sphere, Point2D x, Point2D y) const {
         const double r = dist(x, y);
         assert(r > 0.0);
-        return screened::green_2d(alpha, sphere.radius, r);
+        return screened_green::green_2d(alpha, sphere.radius, r);
     }
 
     // weight factor: 1 / I_0(αr) for the screened Poisson eq in 2D
     double screening_factor(double radius) const {
-        return screened::weight_2d(alpha, radius);
+        return screened_green::weight_2d(alpha, radius);
     }
 
     double green_mass(double radius) const {
-        return screened::mass_2d(alpha, radius);
+        return screened_green::mass_2d(alpha, radius);
     }
 
     Point2D sample_green(Sphere2D sphere, PRNG &rng) const {
-        const double radius = screened::sample_radius_2d(alpha, sphere.radius, rng);
-        const double angle = 2.0 * screened::pi * rng.unit();
+        const double radius = screened_green::sample_radius_2d(
+            alpha, sphere.radius, rng);
+        const double angle = 2.0 * screened_green::pi * rng.unit();
         return Point2D{
             sphere.centre.x + radius * std::cos(angle),
             sphere.centre.y + radius * std::sin(angle),
@@ -103,34 +106,35 @@ struct ScreenedPoisson3D {
         return 0.0;
     }
 
-    double boundary(Point3D p) const {
+    BoundaryCondition boundary(Point3D p) const {
         // combination of spherical harmonics
         double r_sq = p.x*p.x + p.y*p.y;
         double y50  = p.z * (8*p.z*p.z*p.z*p.z - 40*p.z*p.z*r_sq + 15*r_sq*r_sq);
         double y5m3 = (8*p.z*p.z - r_sq) * p.y * (3*p.x*p.x - p.y*p.y);
-        return y50 + 4.0 * y5m3;
+        return BoundaryCondition::dirichlet(y50 + 4.0 * y5m3);
     }
 
     // Green's function for screened Poisson operator on 3D spherical domain
     double green(Sphere3D sphere, Point3D x, Point3D y) const {
         const double r = dist(x, y);
         assert(r > 0.0);
-        return screened::green_3d(alpha, sphere.radius, r);
+        return screened_green::green_3d(alpha, sphere.radius, r);
     }
 
     // weight factor
     double screening_factor(double radius) const {
-        return screened::weight_3d(alpha, radius);
+        return screened_green::weight_3d(alpha, radius);
     }
 
     double green_mass(double radius) const {
-        return screened::mass_3d(alpha, radius);
+        return screened_green::mass_3d(alpha, radius);
     }
 
     Point3D sample_green(Sphere3D sphere, PRNG &rng) const {
-        const double radius = screened::sample_radius_3d(alpha, sphere.radius, rng);
+        const double radius = screened_green::sample_radius_3d(
+            alpha, sphere.radius, rng);
         const double z = 2.0 * rng.unit() - 1.0;
-        const double angle = 2.0 * screened::pi * rng.unit();
+        const double angle = 2.0 * screened_green::pi * rng.unit();
         const double xy = std::sqrt(1.0 - z * z);
         return Point3D{
             sphere.centre.x + radius * xy * std::cos(angle),

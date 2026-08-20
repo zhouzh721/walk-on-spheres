@@ -3,10 +3,11 @@
 #include <cassert>
 #include <cmath>
 #include "equations.hpp"
+#include "wos/boundary/condition.hpp"
 #include "wos/fastmath.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/mesh.hpp"
 #include "wos/runner.hpp"
-#include "wos/wos.hpp"
 
 namespace wos {
 
@@ -22,10 +23,10 @@ struct Helmholtz2D {
         return 0.0;
     }
 
-    double boundary(Point2D p, int boundary_id) const {
+    BoundaryCondition boundary(Point2D p, int boundary_id) const {
         (void)p;
         (void)boundary_id;
-        return 1.0; // uniform forcing
+        return BoundaryCondition::dirichlet(1.0);
     }
 
     // Green's function for Helmholtz operator on 2D spherical domain
@@ -55,9 +56,9 @@ struct Helmholtz3D {
         return 0.0;
     }
 
-    double boundary(Point3D p) const {
+    BoundaryCondition boundary(Point3D p) const {
         (void)p;
-        return 1.0;
+        return BoundaryCondition::dirichlet(1.0);
     }
 
     // Green's function for Helmholtz operator on 3D spherical domain

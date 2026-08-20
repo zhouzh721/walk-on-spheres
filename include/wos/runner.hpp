@@ -13,8 +13,8 @@
 #include "wos/inside.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
+#include "wos/solver/wos.hpp"
 #include "wos/source_mode.hpp"
-#include "wos/wos.hpp"
 
 namespace wos {
 
@@ -153,6 +153,8 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
     if (rank == 0) std::printf("Beginning walk-on-spheres...\n");
     MPI_Barrier(MPI_COMM_WORLD);
     const double wos_start = MPI_Wtime();
+    const solver::WoS wos_solver(
+        solver::Settings{N_walks, epsilon, max_steps});
 
     for (int i = 0; i < block_Nx; i++) {
         double x = grid_coordinate(grid.xmin, grid.xmax, x_start + i, grid.Nx);
@@ -174,7 +176,7 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                     p0 = Point3D{x, y, z};
                 }
 
-                auto start = get_start_point(*bvh, p0);
+                auto start = solver::find_start_point(*bvh, p0);
                 PointLocation point_location;
                 if constexpr (N == 2) {
                     point_location = classify_point(domain, p0, start.radius, boundary_tolerance);
@@ -192,16 +194,18 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                     }
                 }
 
-                WoSResult point_result{NAN, NAN, NAN, NAN, 0};
+                solver::Result point_result{NAN, NAN, NAN, NAN, 0};
                 if (point_location == PointLocation::Boundary) {
                     if constexpr (N == 2) {
-                        point_result = WoSResult{
-                            eq.boundary(start.nearest, start.boundary_id),
+                        point_result = solver::Result{
+                            dirichlet_value(eq.boundary(
+                                start.nearest, start.boundary_id)),
                             0.0, 0.0, 0.0, 0
                         };
                     } else {
-                        point_result = WoSResult{
-                            eq.boundary(start.nearest), 0.0, 0.0, 0.0, 0
+                        point_result = solver::Result{
+                            dirichlet_value(eq.boundary(start.nearest)),
+                            0.0, 0.0, 0.0, 0
                         };
                     }
                 } else if (point_location == PointLocation::Inside) {
@@ -210,15 +214,13 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                     if constexpr (N == 2) {
                         constexpr std::uint64_t SOURCE_STREAM = 0xA4093822299F31D0ULL;
                         PRNG source_rng(splitmix64(point_seed ^ SOURCE_STREAM));
-                        point_result = wos_run(
-                            *bvh, p0, start, eq, N_walks, epsilon,
-                            walk_rng, source_rng, max_steps);
+                        point_result = wos_solver.solve(
+                            *bvh, p0, start, eq, walk_rng, source_rng);
                     } else {
                         // Preserve the existing 3D behaviour: source sampling
                         // and WoS steps continue to share one random stream.
-                        point_result = wos_run(
-                            *bvh, p0, start, eq, N_walks, epsilon,
-                            walk_rng, walk_rng, max_steps);
+                        point_result = wos_solver.solve(
+                            *bvh, p0, start, eq, walk_rng, walk_rng);
                     }
 
                     ++local_inside_count;

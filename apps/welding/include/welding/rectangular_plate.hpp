@@ -8,6 +8,13 @@
 
 namespace welding {
 
+enum class RectangularBoundary : int {
+    Bottom = 0,
+    Right = 1,
+    Top = 2,
+    Left = 3,
+};
+
 inline wos::Mesh<2> make_rectangular_plate(double xmin, double xmax,
                                             double ymin, double ymax) {
     if (!(xmax > xmin) || !(ymax > ymin)) {
@@ -28,7 +35,12 @@ inline wos::Mesh<2> make_rectangular_plate(double xmin, double xmax,
         2, 3,
         3, 0,
     };
-    mesh.boundary_ids = {0, 0, 0, 0};
+    mesh.boundary_ids = {
+        static_cast<int>(RectangularBoundary::Bottom),
+        static_cast<int>(RectangularBoundary::Right),
+        static_cast<int>(RectangularBoundary::Top),
+        static_cast<int>(RectangularBoundary::Left),
+    };
     return mesh;
 }
 

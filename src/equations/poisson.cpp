@@ -2,11 +2,12 @@
 #include <cassert>
 #include <cmath>
 #include "equations.hpp"
+#include "wos/boundary/condition.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/mesh.hpp"
-#include "wos/poisson.hpp"
 #include "wos/runner.hpp"
+#include "wos/sampling/poisson_green.hpp"
 #include "wos/source_mode.hpp"
-#include "wos/wos.hpp"
 
 namespace wos {
 
@@ -43,11 +44,11 @@ struct Poisson2D {
              : 0.0;
     }
 
-    double boundary(Point2D p, int boundary_id) const {
+    BoundaryCondition boundary(Point2D p, int boundary_id) const {
         // All edges of the membrane are fixed in the reference plane.
         (void)p;
         (void)boundary_id;
-        return 0.0;
+        return BoundaryCondition::dirichlet(0.0);
     }
 
     // Green's function for Laplace operator on 2D spherical domain
@@ -84,12 +85,12 @@ struct Poisson3D {
         return 0.0;
     }
 
-    double boundary(Point3D p) const {
+    BoundaryCondition boundary(Point3D p) const {
         // combination of spherical harmonics
         double r_sq = p.x*p.x + p.y*p.y;
         double y50  = p.z * (8*p.z*p.z*p.z*p.z - 40*p.z*p.z*r_sq + 15*r_sq*r_sq);
         double y5m3 = (8*p.z*p.z - r_sq) * p.y * (3*p.x*p.x - p.y*p.y);
-        return y50 + 4.0 * y5m3;
+        return BoundaryCondition::dirichlet(y50 + 4.0 * y5m3);
     }
 
     // Green's function for Laplace operator on 3D spherical domain

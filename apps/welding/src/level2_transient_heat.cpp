@@ -26,14 +26,16 @@
 #include "welding/field_sampler.hpp"
 #include "welding/gaussian_heat_source.hpp"
 #include "welding/rectangular_plate.hpp"
+#include "wos/boundary/condition.hpp"
 #include "wos/bvh.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
-#include "wos/screened.hpp"
+#include "wos/sampling/screened_green.hpp"
+#include "wos/solver/wos.hpp"
 #include "wos/source_mode.hpp"
-#include "wos/wos.hpp"
 
 namespace {
 
@@ -260,27 +262,28 @@ struct TransientGaussianHeat2D {
         return previous_contribution + heat_contribution;
     }
 
-    double boundary([[maybe_unused]] wos::Point2D point,
-                    [[maybe_unused]] int boundary_id) const {
-        return 0.0;
+    wos::BoundaryCondition boundary(
+            [[maybe_unused]] wos::Point2D point,
+            [[maybe_unused]] int boundary_id) const {
+        return wos::BoundaryCondition::dirichlet(0.0);
     }
 
     double green(wos::Sphere2D sphere, wos::Point2D x,
                  wos::Point2D y) const {
-        return wos::screened::green_2d(
+        return wos::screened_green::green_2d(
             alpha, sphere.radius, wos::dist(x, y));
     }
 
     double screening_factor(double radius) const {
-        return wos::screened::weight_2d(alpha, radius);
+        return wos::screened_green::weight_2d(alpha, radius);
     }
 
     double green_mass(double radius) const {
-        return wos::screened::mass_2d(alpha, radius);
+        return wos::screened_green::mass_2d(alpha, radius);
     }
 
     wos::Point2D sample_green(wos::Sphere2D sphere, wos::PRNG &rng) const {
-        const double radius = wos::screened::sample_radius_2d(
+        const double radius = wos::screened_green::sample_radius_2d(
             alpha, sphere.radius, rng);
         const double angle = 2.0 * pi * rng.unit();
         return wos::Point2D{
@@ -410,11 +413,13 @@ int run_level2(const Level2Config &config) {
     const double diffusivity = config.conductivity /
         (config.density * config.specific_heat);
     const double alpha = 1.0 / std::sqrt(diffusivity * config.dt);
+    const wos::solver::WoS solver(
+        {config.walks, config.epsilon, config.max_steps});
 
     wos::Mesh<2> mesh = welding::make_rectangular_plate(
         xmin, xmax, ymin, ymax);
     std::unique_ptr<wos::BVH<2>> bvh = wos::build_bvh(mesh);
-    std::vector<wos::StartPoint<2>> starts(point_count);
+    std::vector<wos::solver::StartPoint<2>> starts(point_count);
     for (int i = 0; i < grid.Nx; ++i) {
         const double x = wos::grid_coordinate(
             grid.xmin, grid.xmax, i, grid.Nx);
@@ -423,7 +428,7 @@ int run_level2(const Level2Config &config) {
                 grid.ymin, grid.ymax, j, grid.Ny);
             const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
             const wos::Point2D point{x, y};
-            starts[index] = wos::get_start_point(*bvh, point);
+            starts[index] = wos::solver::find_start_point(*bvh, point);
         }
     }
 
@@ -586,10 +591,9 @@ int run_level2(const Level2Config &config) {
                 wos::PRNG source_rng(wos::splitmix64(
                     point_seed ^ 0xA4093822299F31D0ULL));
 
-                const wos::WoSResult result = wos::wos_run(
+                const wos::solver::Result result = solver.solve(
                     *bvh, point, starts[index], equation,
-                    config.walks, config.epsilon,
-                    walk_rng, source_rng, config.max_steps);
+                    walk_rng, source_rng);
                 next[index] = result.mean;
                 standard_error[index] = result.standard_error;
                 max_steps_hits += result.max_steps_hits;

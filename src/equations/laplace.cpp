@@ -1,9 +1,10 @@
 // Laplace equation: ∆u = 0 on a domain Ω, with boundary u = g on ∂Ω
 #include <cmath>
 #include "equations.hpp"
+#include "wos/boundary/condition.hpp"
+#include "wos/geometry/sphere.hpp"
 #include "wos/mesh.hpp"
 #include "wos/runner.hpp"
-#include "wos/wos.hpp"
 
 namespace wos {
 
@@ -13,8 +14,9 @@ struct Laplace2D {
     [[maybe_unused]] static constexpr bool has_source = false;
     [[maybe_unused]] static constexpr bool has_screening = false;
 
-    double boundary(Point2D p, int boundary_id) const {
-        return boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0;
+    BoundaryCondition boundary(Point2D p, int boundary_id) const {
+        return BoundaryCondition::dirichlet(
+            boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0);
     }
 
     // Green's function for Laplace operator on 2D spherical domain
@@ -27,12 +29,12 @@ struct Laplace3D {
     [[maybe_unused]] static constexpr bool has_source = false;
     [[maybe_unused]] static constexpr bool has_screening = false;
 
-    double boundary(Point3D p) const {
+    BoundaryCondition boundary(Point3D p) const {
         // combination of spherical harmonics
         double r_sq = p.x*p.x + p.y*p.y;
         double y50  = p.z * (8*p.z*p.z*p.z*p.z - 40*p.z*p.z*r_sq + 15*r_sq*r_sq);
         double y5m3 = (8*p.z*p.z - r_sq) * p.y * (3*p.x*p.x - p.y*p.y);
-        return y50 + 4.0 * y5m3;
+        return BoundaryCondition::dirichlet(y50 + 4.0 * y5m3);
     }
 
     // Green's function for Laplace operator on 3D spherical domain

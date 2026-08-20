@@ -8,10 +8,11 @@
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
 
-namespace wos::source_sampling {
+namespace wos::source_mis {
 
 // A source proposal is an optional equation capability. Detect the actual
-// interface instead of requiring a second boolean alongside Eq::has_source.
+// interface instead of requiring a second boolean alongside
+// Equation::has_source.
 template<typename Equation, typename PointType, typename = void>
 struct HasSourceProposal : std::false_type {};
 
@@ -28,10 +29,10 @@ template<typename Equation, typename PointType>
 inline constexpr bool has_source_proposal_v =
     HasSourceProposal<Equation, PointType>::value;
 
-// Estimate the Green source integral on one WoS ball using a random-mixture
+// Estimate the Green source integral on one WoS sphere using a random-mixture
 // balance heuristic. The source proposal is normalized on the full physical
-// domain; its samples outside the current ball correctly contribute zero via
-// the integral's ball indicator.
+// domain; samples outside the current sphere contribute zero through the
+// integral's sphere indicator.
 template<typename Equation, typename SphereType>
 double green_source_mis_contribution(const Equation &equation,
                                      const SphereType &sphere,
@@ -77,4 +78,4 @@ double green_source_mis_contribution(const Equation &equation,
         : green_value * source_value / mixture_pdf;
 }
 
-} // namespace wos::source_sampling
+} // namespace wos::source_mis
