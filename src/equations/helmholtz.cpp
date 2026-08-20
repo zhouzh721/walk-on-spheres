@@ -23,6 +23,10 @@ struct Helmholtz2D {
         return 0.0;
     }
 
+    BoundaryType boundary_type([[maybe_unused]] int boundary_id) const {
+        return BoundaryType::Dirichlet;
+    }
+
     BoundaryCondition boundary(Point2D p, int boundary_id) const {
         (void)p;
         (void)boundary_id;
@@ -80,19 +84,23 @@ struct Helmholtz3D {
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     (void)source_mode;
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Helmholtz2D{}, seed);
+                  max_steps, max_ray_attempts, Helmholtz2D{}, seed,
+                  false, 0.0, SourceMode::Uniform, solver_type);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     (void)source_mode;
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Helmholtz3D{}, seed);
+                  max_steps, max_ray_attempts, Helmholtz3D{}, seed,
+                  false, 0.0, SourceMode::Uniform, solver_type);
 }
 
 }   // anonymous namespace

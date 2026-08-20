@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "wos/solver/type.hpp"
 #include "wos/source_mode.hpp"
 
 namespace wos {
@@ -9,11 +10,13 @@ struct Equation {
     int (*run_2D)(int rank, int size, const char *mesh_filename, const char *output_filename,
                   int Nx, int Ny, int Nz, int N_walks, double epsilon,
                   int max_steps, int max_ray_attempts, uint64_t seed,
-                  double alpha, wos::SourceMode source_mode);
+                  double alpha, wos::SourceMode source_mode,
+                  wos::solver::Type solver_type);
     int (*run_3D)(int rank, int size, const char *mesh_filename, const char *output_filename,
                   int Nx, int Ny, int Nz, int N_walks, double epsilon,
                   int max_steps, int max_ray_attempts, uint64_t seed,
-                  double alpha, wos::SourceMode source_mode);
+                  double alpha, wos::SourceMode source_mode,
+                  wos::solver::Type solver_type);
 };
 
 // link equations

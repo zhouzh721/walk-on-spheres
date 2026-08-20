@@ -61,6 +61,10 @@ struct ScreenedPoisson2D {
         return std::sqrt((p.x-0.45)*(p.x-0.45) + p.y*p.y) <= 0.5 ? 5.0 : 0.0;
     }
 
+    BoundaryType boundary_type([[maybe_unused]] int boundary_id) const {
+        return BoundaryType::Dirichlet;
+    }
+
     BoundaryCondition boundary(Point2D p, int boundary_id) const {
         return BoundaryCondition::dirichlet(
             boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0);
@@ -146,21 +150,23 @@ struct ScreenedPoisson3D {
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     const double effective_eps = screened_epsilon(rank, eps, alpha);
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, effective_eps,
                   max_steps, max_ray_attempts,
                   ScreenedPoisson2D{alpha, source_mode}, seed,
-                  true, alpha, source_mode);
+                  true, alpha, source_mode, solver_type);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     const double effective_eps = screened_epsilon(rank, eps, alpha);
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, effective_eps,
                   max_steps, max_ray_attempts,
                   ScreenedPoisson3D{alpha, source_mode}, seed,
-                  true, alpha, source_mode);
+                  true, alpha, source_mode, solver_type);
 }
 
 }   // anonymous namespace

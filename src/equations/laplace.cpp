@@ -14,6 +14,10 @@ struct Laplace2D {
     [[maybe_unused]] static constexpr bool has_source = false;
     [[maybe_unused]] static constexpr bool has_screening = false;
 
+    BoundaryType boundary_type([[maybe_unused]] int boundary_id) const {
+        return BoundaryType::Dirichlet;
+    }
+
     BoundaryCondition boundary(Point2D p, int boundary_id) const {
         return BoundaryCondition::dirichlet(
             boundary_id == 0 ? p.x*p.x - p.y*p.y : 0.0);
@@ -46,19 +50,23 @@ struct Laplace3D {
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     (void)source_mode;
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Laplace2D{}, seed);
+                  max_steps, max_ray_attempts, Laplace2D{}, seed,
+                  false, 0.0, SourceMode::Uniform, solver_type);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     (void)source_mode;
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
-                  max_steps, max_ray_attempts, Laplace3D{}, seed);
+                  max_steps, max_ray_attempts, Laplace3D{}, seed,
+                  false, 0.0, SourceMode::Uniform, solver_type);
 }
 
 }   // anonymous namespace

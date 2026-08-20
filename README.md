@@ -6,6 +6,7 @@ This repo implements a minimal walk-on-spheres-based PDE solver for various elli
 - CMake >= 3.20
 - MPI (e.g. Open MPI, MPICH, Cray MPI)
 - HDF5 with parallel support
+- FCPW and Eigen (included as recursively initialized git submodules)
 - Python >= 3.10 with `numpy`, `h5py`, `matplotlib` (result inspection and visualisation)
 
 ### MacOS
@@ -23,9 +24,32 @@ Submit using a slurm script.
 
 ## Build
 ```bash
+git submodule update --init --recursive
 cmake -B build
 cmake --build build -j
 ```
+
+FCPW is configured as a scalar CPU-only dependency in the initial integration;
+Enoki, GPU support, demos, bindings, and FCPW's own tests are disabled.
+
+## Geometry backend
+
+FCPW is the geometry backend for two- and three-dimensional WoS, the welding
+applications, 3D point classification, and two-dimensional WoST. Solvers and
+applications depend on the project-owned `GeometryScene<N>` interface;
+`BoundaryScene2D` extends it with Dirichlet/Neumann queries needed by WoST.
+FCPW and Eigen types therefore do not leak into equations or solver APIs.
+
+Geometry is normalized before conversion to FCPW's single-precision
+representation, and query results are converted back to the solver's `double`
+coordinates. In MPI runs rank 0 broadcasts only `Mesh<N>`; every rank then
+builds its own FCPW scene. Three-dimensional domains are checked for closed
+two-manifold topology, and classification retains multi-ray voting,
+edge/vertex ambiguity retries, and `Indeterminate` diagnostics.
+
+The previous project-owned BVH implementation has been removed. See
+[`docs/geometry_backend.md`](docs/geometry_backend.md) for the current geometry
+architecture and numerical assumptions.
 
 ## Run
 ```bash

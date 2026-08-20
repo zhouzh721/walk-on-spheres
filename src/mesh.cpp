@@ -321,50 +321,6 @@ void mesh_bbox(const Mesh<N> &m, double *xmin, double *xmax, double *ymin, doubl
     if (zmax) *zmax = zu;
 }
 
-template<int N>
-AABB<N> prim_bbox(const Mesh<N> &m, int p) {
-    AABB<N> bbox{};
-    if constexpr (N == 2) {
-        Point2D s0 = m.verts[m.prims[2*p + 0]];
-        Point2D s1 = m.verts[m.prims[2*p + 1]];
-        bbox.pmin = Point2D{ std::fmin(s0.x, s1.x), std::fmin(s0.y, s1.y) };
-        bbox.pmax = Point2D{ std::fmax(s0.x, s1.x), std::fmax(s0.y, s1.y) };
-    } else {
-        Point3D v0 = m.verts[m.prims[3*p + 0]];
-        Point3D v1 = m.verts[m.prims[3*p + 1]];
-        Point3D v2 = m.verts[m.prims[3*p + 2]];
-        bbox.pmin = Point3D{
-            std::fmin(std::fmin(v0.x, v1.x), v2.x),
-            std::fmin(std::fmin(v0.y, v1.y), v2.y),
-            std::fmin(std::fmin(v0.z, v1.z), v2.z),
-        };
-        bbox.pmax = Point3D{
-            std::fmax(std::fmax(v0.x, v1.x), v2.x),
-            std::fmax(std::fmax(v0.y, v1.y), v2.y),
-            std::fmax(std::fmax(v0.z, v1.z), v2.z),
-        };
-    }
-    return bbox;
-}
-
-template<int N>
-Point<N> centroid(const Mesh<N> &m, int p) {
-    if constexpr (N == 2) {
-        Point2D s0 = m.verts[m.prims[2*p + 0]];
-        Point2D s1 = m.verts[m.prims[2*p + 1]];
-        return Point2D{ (s0.x+s1.x)/2.0, (s0.y+s1.y)/2.0 };
-    } else {
-        Point3D v0 = m.verts[m.prims[3*p + 0]];
-        Point3D v1 = m.verts[m.prims[3*p + 1]];
-        Point3D v2 = m.verts[m.prims[3*p + 2]];
-        return Point3D{
-            (v0.x+v1.x+v2.x)/3.0,
-            (v0.y+v1.y+v2.y)/3.0,
-            (v0.z+v1.z+v2.z)/3.0
-        };
-    }
-}
-
 // explicit instantiations for 2D and 3D
 template Mesh<2> load_mesh<2>(const char *);
 template Mesh<3> load_mesh<3>(const char *);
@@ -372,9 +328,4 @@ template void bcast_mesh<2>(Mesh<2>&, int, MPI_Comm);
 template void bcast_mesh<3>(Mesh<3>&, int, MPI_Comm);
 template void mesh_bbox<2>(const Mesh<2>&, double*, double*, double*, double*, double*, double*);
 template void mesh_bbox<3>(const Mesh<3>&, double*, double*, double*, double*, double*, double*);
-template AABB<2> prim_bbox<2>(const Mesh<2>&, int);
-template AABB<3> prim_bbox<3>(const Mesh<3>&, int);
-template Point2D centroid<2>(const Mesh<2>&, int);
-template Point3D centroid<3>(const Mesh<3>&, int);
-
 }

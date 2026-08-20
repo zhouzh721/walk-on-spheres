@@ -1,32 +1,29 @@
 #include <algorithm>
-#include <cerrno>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include <mpi.h>
 
+#include "welding/cli.hpp"
+#include "welding/file_output.hpp"
 #include "welding/field_sampler.hpp"
-#include "wos/boundary/condition.hpp"
-#include "wos/bvh.hpp"
-#include "wos/geometry/sphere.hpp"
+#include "welding/grid_utils.hpp"
+#include "welding/random_streams.hpp"
+#include "welding/rectangular_plate.hpp"
+#include "welding/screened_heat.hpp"
+#include "wos/geometry/fcpw_scene.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
 #include "wos/mesh.hpp"
-#include "wos/prng.hpp"
-#include "wos/sampling/screened_green.hpp"
 #include "wos/solver/wos.hpp"
-#include "wos/source_mode.hpp"
 
 namespace {
 
@@ -71,70 +68,37 @@ void print_usage(const char *program) {
         program);
 }
 
-int parse_positive_int(const char *text, const char *name) {
-    int value = 0;
-    const char *end = text + std::char_traits<char>::length(text);
-    const auto parsed = std::from_chars(text, end, value);
-    if (parsed.ec != std::errc{} || parsed.ptr != end || value <= 0) {
-        throw std::invalid_argument(std::string("invalid ") + name + ": " + text);
-    }
-    return value;
-}
-
-double parse_positive_double(const char *text, const char *name) {
-    if (*text == '\0') {
-        throw std::invalid_argument(std::string("invalid ") + name + ": empty value");
-    }
-    char *end = nullptr;
-    errno = 0;
-    const double value = std::strtod(text, &end);
-    if (errno == ERANGE || end == text || *end != '\0' ||
-        !std::isfinite(value) || value <= 0.0) {
-        throw std::invalid_argument(std::string("invalid ") + name + ": " + text);
-    }
-    return value;
-}
-
-std::uint64_t parse_uint64(const char *text) {
-    std::uint64_t value = 0;
-    const char *end = text + std::char_traits<char>::length(text);
-    const auto parsed = std::from_chars(text, end, value);
-    if (parsed.ec != std::errc{} || parsed.ptr != end) {
-        throw std::invalid_argument(std::string("invalid seed: ") + text);
-    }
-    return value;
-}
-
 Options parse_options(int argc, char **argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
-        auto value_after = [&](const char *name) -> const char * {
-            if (++i >= argc) {
-                throw std::invalid_argument(std::string(name) + " requires a value");
-            }
-            return argv[i];
+        auto value_after = [&](const char *name) {
+            return welding::option_value(i, argc, argv, name);
         };
 
         if (argument == "--grid") {
-            options.grid_size = parse_positive_int(value_after("--grid"), "grid size");
+            options.grid_size = welding::parse_positive_int(
+                value_after("--grid"), "grid size");
         } else if (argument == "--steps") {
-            options.steps = parse_positive_int(value_after("--steps"), "step count");
+            options.steps = welding::parse_positive_int(
+                value_after("--steps"), "step count");
         } else if (argument == "--dt") {
-            options.dt = parse_positive_double(value_after("--dt"), "time step");
+            options.dt = welding::parse_positive_double(
+                value_after("--dt"), "time step");
         } else if (argument == "--diffusivity") {
-            options.diffusivity = parse_positive_double(
+            options.diffusivity = welding::parse_positive_double(
                 value_after("--diffusivity"), "diffusivity");
         } else if (argument == "--walks") {
-            options.walks = parse_positive_int(value_after("--walks"), "walk count");
+            options.walks = welding::parse_positive_int(
+                value_after("--walks"), "walk count");
         } else if (argument == "--epsilon") {
-            options.epsilon = parse_positive_double(
+            options.epsilon = welding::parse_positive_double(
                 value_after("--epsilon"), "epsilon");
         } else if (argument == "--max-steps") {
-            options.max_steps = parse_positive_int(
+            options.max_steps = welding::parse_positive_int(
                 value_after("--max-steps"), "maximum step count");
         } else if (argument == "--seed") {
-            options.seed = parse_uint64(value_after("--seed"));
+            options.seed = welding::parse_uint64(value_after("--seed"));
         } else if (argument == "--output") {
             options.output = value_after("--output");
             if (options.output.empty()) {
@@ -154,76 +118,20 @@ Options parse_options(int argc, char **argv) {
     return options;
 }
 
-wos::Mesh<2> make_unit_square() {
-    wos::Mesh<2> mesh;
-    mesh.verts = {
-        {0.0, 0.0},
-        {1.0, 0.0},
-        {1.0, 1.0},
-        {0.0, 1.0},
-    };
-    mesh.prims = {
-        0, 1,
-        1, 2,
-        2, 3,
-        3, 0,
-    };
-    mesh.boundary_ids = {0, 0, 0, 0};
-    return mesh;
-}
-
-std::size_t flat_index(int i, int j, int ny) {
-    return static_cast<std::size_t>(i) * ny + j;
-}
-
 double eigenfunction(double x, double y) {
     return std::sin(pi * x) * std::sin(pi * y);
 }
 
-struct TransientCoolingEquation2D {
-    static constexpr bool has_source = true;
-    static constexpr bool has_screening = true;
-    static constexpr bool has_green_source = true;
-
-    double alpha;
+struct TransientCoolingEquation2D
+    : welding::ZeroDirichletScreenedHeat2D {
     const welding::FieldSampler2D &previous;
-    wos::SourceMode source_mode = wos::SourceMode::Green;
 
-    bool source_may_intersect([[maybe_unused]] wos::Sphere2D sphere) const {
-        return true;
-    }
+    TransientCoolingEquation2D(
+            double alpha, const welding::FieldSampler2D &previous_field)
+        : ZeroDirichletScreenedHeat2D(alpha), previous(previous_field) {}
 
     double source(wos::Point2D point) const {
-        return alpha * alpha * previous.sample(point);
-    }
-
-    wos::BoundaryCondition boundary(
-            [[maybe_unused]] wos::Point2D point,
-            [[maybe_unused]] int boundary_id) const {
-        return wos::BoundaryCondition::dirichlet(0.0);
-    }
-
-    double green(wos::Sphere2D sphere, wos::Point2D x, wos::Point2D y) const {
-        return wos::screened_green::green_2d(
-            alpha, sphere.radius, wos::dist(x, y));
-    }
-
-    double screening_factor(double radius) const {
-        return wos::screened_green::weight_2d(alpha, radius);
-    }
-
-    double green_mass(double radius) const {
-        return wos::screened_green::mass_2d(alpha, radius);
-    }
-
-    wos::Point2D sample_green(wos::Sphere2D sphere, wos::PRNG &rng) const {
-        const double radius = wos::screened_green::sample_radius_2d(
-            alpha, sphere.radius, rng);
-        const double angle = 2.0 * pi * rng.unit();
-        return wos::Point2D{
-            sphere.centre.x + radius * std::cos(angle),
-            sphere.centre.y + radius * std::sin(angle),
-        };
+        return screening_parameter_squared() * previous.sample(point);
     }
 };
 
@@ -243,7 +151,8 @@ ErrorSummary field_error(const wos::Grid &grid,
         for (int j = 1; j < grid.Ny - 1; ++j) {
             const double y = wos::grid_coordinate(grid.ymin, grid.ymax, j, grid.Ny);
             const double exact = amplitude * eigenfunction(x, y);
-            const double error = field[flat_index(i, j, grid.Ny)] - exact;
+            const double error =
+                field[welding::flat_index_2d(i, j, grid.Ny)] - exact;
             squared_sum += error * error;
             max_absolute = std::max(max_absolute, std::abs(error));
             ++count;
@@ -265,10 +174,12 @@ int run_level0(const Options &options) {
     const std::size_t point_count =
         static_cast<std::size_t>(grid.Nx) * grid.Ny;
 
-    wos::Mesh<2> mesh = make_unit_square();
-    std::unique_ptr<wos::BVH<2>> bvh = wos::build_bvh(mesh);
+    wos::Mesh<2> mesh = welding::make_rectangular_plate(
+        grid.xmin, grid.xmax, grid.ymin, grid.ymax);
+    wos::FcpwGeometryScene<2> geometry_scene(mesh);
 
-    std::vector<wos::solver::StartPoint<2>> starts(point_count);
+    const std::vector<wos::solver::StartPoint<2>> starts =
+        welding::build_start_points_2d(grid, geometry_scene);
     std::vector<double> previous(point_count, 0.0);
     std::vector<double> next(point_count, 0.0);
     std::vector<double> standard_error(point_count, 0.0);
@@ -277,9 +188,8 @@ int run_level0(const Options &options) {
         const double x = wos::grid_coordinate(grid.xmin, grid.xmax, i, grid.Nx);
         for (int j = 0; j < grid.Ny; ++j) {
             const double y = wos::grid_coordinate(grid.ymin, grid.ymax, j, grid.Ny);
-            const std::size_t index = flat_index(i, j, grid.Ny);
-            const wos::Point2D point{x, y};
-            starts[index] = wos::solver::find_start_point(*bvh, point);
+            const std::size_t index =
+                welding::flat_index_2d(i, j, grid.Ny);
             if (i != 0 && i != grid.Nx - 1 && j != 0 && j != grid.Ny - 1) {
                 previous[index] = eigenfunction(x, y);
             }
@@ -293,14 +203,7 @@ int run_level0(const Options &options) {
         {options.walks, options.epsilon, options.max_steps});
 
     const std::filesystem::path output_path(options.output);
-    if (!output_path.parent_path().empty()) {
-        std::error_code error;
-        std::filesystem::create_directories(output_path.parent_path(), error);
-        if (error) {
-            throw std::runtime_error(
-                "could not create output directory: " + error.message());
-        }
-    }
+    welding::ensure_parent_directory(output_path);
     std::ofstream output(output_path);
     if (!output) {
         throw std::runtime_error("could not open output file: " + options.output);
@@ -329,7 +232,8 @@ int run_level0(const Options &options) {
             for (int j = 0; j < grid.Ny; ++j) {
                 const double y = wos::grid_coordinate(
                     grid.ymin, grid.ymax, j, grid.Ny);
-                const std::size_t index = flat_index(i, j, grid.Ny);
+                    const std::size_t index =
+                        welding::flat_index_2d(i, j, grid.Ny);
                 const double exact = exact_amplitude * eigenfunction(x, y);
                 const double error = field[index] - exact;
                 history_output << step << ','
@@ -346,7 +250,8 @@ int run_level0(const Options &options) {
     };
 
     const int center = grid.Nx / 2;
-    const std::size_t center_index = flat_index(center, center, grid.Ny);
+    const std::size_t center_index =
+        welding::flat_index_2d(center, center, grid.Ny);
     output << "0,0," << previous[center_index]
            << ",0,1,1,0,0,0\n";
     write_history_step(0, 0.0, previous, standard_error, 1.0);
@@ -374,21 +279,19 @@ int run_level0(const Options &options) {
             for (int j = 1; j < grid.Ny - 1; ++j) {
                 const double y = wos::grid_coordinate(
                     grid.ymin, grid.ymax, j, grid.Ny);
-                const std::size_t index = flat_index(i, j, grid.Ny);
+                const std::size_t index =
+                    welding::flat_index_2d(i, j, grid.Ny);
                 const wos::Point2D point{x, y};
 
-                const std::uint64_t point_seed = wos::splitmix64(
-                    options.seed ^
-                    wos::splitmix64(static_cast<std::uint64_t>(step)) ^
-                    wos::splitmix64(static_cast<std::uint64_t>(index)));
-                wos::PRNG walk_rng(wos::splitmix64(
-                    point_seed ^ 0x13198A2E03707344ULL));
-                wos::PRNG source_rng(wos::splitmix64(
-                    point_seed ^ 0xA4093822299F31D0ULL));
+                welding::PathRandomStreams random =
+                    welding::make_path_random_streams(welding::point_seed(
+                        options.seed,
+                        wos::splitmix64(static_cast<std::uint64_t>(step)),
+                        index));
 
                 const wos::solver::Result result = solver.solve(
-                    *bvh, point, starts[index], equation,
-                    walk_rng, source_rng);
+                    geometry_scene, point, starts[index], equation,
+                    random.walk, random.source);
                 next[index] = result.mean;
                 standard_error[index] = result.standard_error;
             }
@@ -435,7 +338,8 @@ int run_level0(const Options &options) {
         const double x = wos::grid_coordinate(grid.xmin, grid.xmax, i, grid.Nx);
         for (int j = 0; j < grid.Ny; ++j) {
             const double y = wos::grid_coordinate(grid.ymin, grid.ymax, j, grid.Ny);
-            const std::size_t index = flat_index(i, j, grid.Ny);
+            const std::size_t index =
+                welding::flat_index_2d(i, j, grid.Ny);
             const double exact = final_amplitude * eigenfunction(x, y);
             const double error = previous[index] - exact;
             field_output << x << ','

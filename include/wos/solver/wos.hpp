@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "wos/boundary/condition.hpp"
-#include "wos/bvh.hpp"
+#include "wos/geometry/scene.hpp"
 #include "wos/geometry/sphere.hpp"
 #include "wos/prng.hpp"
 #include "wos/sampling/source_mis.hpp"
@@ -19,7 +19,7 @@ namespace wos::solver {
 namespace detail {
 
 template<int N, typename Equation>
-SampleResult sample(const BVH<N> &bvh, Point<N> start_position,
+SampleResult sample(const GeometryScene<N> &scene, Point<N> start_position,
                     const StartPoint<N> &start, const Equation &equation,
                     double epsilon, PRNG &walk_rng, PRNG &source_rng,
                     int max_steps) {
@@ -32,7 +32,34 @@ SampleResult sample(const BVH<N> &bvh, Point<N> start_position,
     double weight = 1.0;
     int steps = 0;
 
-    while (sphere.radius > epsilon && steps < max_steps) {
+    while (true) {
+        // A boundary hit takes precedence when the final allowed jump lands
+        // inside the epsilon shell.
+        if (sphere.radius <= epsilon) {
+            if constexpr (N == 2) {
+                sample_value += weight * dirichlet_value(
+                    equation.boundary(nearest, boundary_id));
+            } else {
+                sample_value += weight * dirichlet_value(
+                    equation.boundary(nearest));
+            }
+            return SampleResult{
+                sample_value, steps, TerminationReason::ReachedDirichlet};
+        }
+        if (steps >= max_steps) {
+            // Preserve the existing WoS truncation policy: approximate the
+            // unresolved tail with the nearest boundary value.
+            if constexpr (N == 2) {
+                sample_value += weight * dirichlet_value(
+                    equation.boundary(nearest, boundary_id));
+            } else {
+                sample_value += weight * dirichlet_value(
+                    equation.boundary(nearest));
+            }
+            return SampleResult{
+                sample_value, steps, TerminationReason::ReachedMaxSteps};
+        }
+
         if constexpr (Equation::has_source) {
             bool source_may_intersect = true;
             if constexpr (N == 2) {
@@ -93,28 +120,12 @@ SampleResult sample(const BVH<N> &bvh, Point<N> start_position,
         position = sample_uniform_surface(sphere, walk_rng);
         ++steps;
 
-        double radius;
-        if constexpr (N == 2) {
-            const auto boundary = bvh_npq(bvh, position);
-            radius = boundary.distance;
-            nearest = boundary.point;
-            boundary_id = boundary.boundary_id;
-        } else {
-            radius = bvh_npq(bvh, position, &nearest);
-        }
-        sphere = Sphere<N>{position, radius};
+        const NearestPointResult<N> boundary =
+            scene.closest_boundary(position);
+        nearest = boundary.point;
+        boundary_id = boundary.boundary_id;
+        sphere = Sphere<N>{position, boundary.distance};
     }
-
-    const bool max_steps_reached = sphere.radius > epsilon;
-    if constexpr (N == 2) {
-        sample_value += weight * dirichlet_value(
-            equation.boundary(nearest, boundary_id));
-    } else {
-        sample_value += weight * dirichlet_value(
-            equation.boundary(nearest));
-    }
-
-    return SampleResult{sample_value, steps, max_steps_reached};
 }
 
 } // namespace detail
@@ -128,7 +139,7 @@ public:
     }
 
     template<int N, typename Equation>
-    Result solve(const BVH<N> &bvh, Point<N> point,
+    Result solve(const GeometryScene<N> &scene, Point<N> point,
                  const StartPoint<N> &start, const Equation &equation,
                  PRNG &walk_rng, PRNG &source_rng) const {
         double mean = 0.0;
@@ -138,7 +149,7 @@ public:
 
         for (int i = 0; i < settings_.walks; ++i) {
             const SampleResult path = detail::sample(
-                bvh, point, start, equation, settings_.epsilon,
+                scene, point, start, equation, settings_.epsilon,
                 walk_rng, source_rng, settings_.max_steps);
             const double count = static_cast<double>(i + 1);
             const double delta_before = path.value - mean;
@@ -146,7 +157,9 @@ public:
             const double delta_after = path.value - mean;
             m2 += delta_before * delta_after;
             total_steps += path.steps;
-            if (path.max_steps_reached) ++max_steps_hits;
+            if (path.termination == TerminationReason::ReachedMaxSteps) {
+                ++max_steps_hits;
+            }
         }
 
         const double variance = settings_.walks > 1
@@ -162,10 +175,10 @@ public:
     }
 
     template<int N, typename Equation>
-    Result solve(const BVH<N> &bvh, Point<N> point,
+    Result solve(const GeometryScene<N> &scene, Point<N> point,
                  const Equation &equation, PRNG &walk_rng,
                  PRNG &source_rng) const {
-        return solve(bvh, point, find_start_point(bvh, point), equation,
+        return solve(scene, point, find_start_point(scene, point), equation,
                      walk_rng, source_rng);
     }
 

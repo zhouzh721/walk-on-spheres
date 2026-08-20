@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wos/bvh.hpp"
+#include "wos/geometry/scene.hpp"
 
 namespace wos::solver {
 
@@ -12,16 +12,12 @@ struct StartPoint {
 };
 
 template<int N>
-StartPoint<N> find_start_point(const BVH<N> &bvh, Point<N> point) {
-    if constexpr (N == 2) {
-        const auto nearest = bvh_npq(bvh, point);
-        return StartPoint<N>{
-            nearest.distance, nearest.point, nearest.boundary_id};
-    } else {
-        Point<N> nearest;
-        const double radius = bvh_npq(bvh, point, &nearest);
-        return StartPoint<N>{radius, nearest, -1};
-    }
+StartPoint<N> find_start_point(
+    const GeometryScene<N> &scene, Point<N> point) {
+    const NearestPointResult<N> nearest =
+        scene.closest_boundary(point);
+    return StartPoint<N>{
+        nearest.distance, nearest.point, nearest.boundary_id};
 }
 
 } // namespace wos::solver

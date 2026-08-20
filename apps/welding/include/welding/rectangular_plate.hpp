@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cstddef>
 #include <stdexcept>
 
-#include "wos/grid.hpp"
 #include "wos/mesh.hpp"
 
 namespace welding {
@@ -42,15 +40,6 @@ inline wos::Mesh<2> make_rectangular_plate(double xmin, double xmax,
         static_cast<int>(RectangularBoundary::Left),
     };
     return mesh;
-}
-
-inline std::size_t flat_index_2d(int i, int j, int ny) {
-    return static_cast<std::size_t>(i) * static_cast<std::size_t>(ny)
-         + static_cast<std::size_t>(j);
-}
-
-inline bool is_boundary_index_2d(const wos::Grid &grid, int i, int j) {
-    return i == 0 || i == grid.Nx - 1 || j == 0 || j == grid.Ny - 1;
 }
 
 } // namespace welding

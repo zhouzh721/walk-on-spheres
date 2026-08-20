@@ -1,20 +1,15 @@
 #include <algorithm>
-#include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include <mpi.h>
@@ -23,23 +18,22 @@
 #include <omp.h>
 #endif
 
+#include "welding/cli.hpp"
+#include "welding/file_output.hpp"
 #include "welding/field_sampler.hpp"
 #include "welding/gaussian_heat_source.hpp"
+#include "welding/grid_utils.hpp"
+#include "welding/random_streams.hpp"
 #include "welding/rectangular_plate.hpp"
-#include "wos/boundary/condition.hpp"
-#include "wos/bvh.hpp"
-#include "wos/geometry/sphere.hpp"
+#include "welding/screened_heat.hpp"
+#include "welding/temperature_field.hpp"
+#include "wos/geometry/fcpw_scene.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
 #include "wos/mesh.hpp"
-#include "wos/prng.hpp"
-#include "wos/sampling/screened_green.hpp"
 #include "wos/solver/wos.hpp"
-#include "wos/source_mode.hpp"
 
 namespace {
-
-constexpr double pi = 3.141592653589793238462643383279502884;
 
 #ifndef WELDING_RESULTS_DIR
 #define WELDING_RESULTS_DIR "apps/welding/results"
@@ -106,74 +100,38 @@ void print_usage(const char *program) {
         program);
 }
 
-int parse_positive_int(const char *text, const char *name) {
-    int value = 0;
-    const char *end = text + std::char_traits<char>::length(text);
-    const auto parsed = std::from_chars(text, end, value);
-    if (parsed.ec != std::errc{} || parsed.ptr != end || value <= 0) {
-        throw std::invalid_argument(std::string("invalid ") + name + ": " + text);
-    }
-    return value;
-}
-
-double parse_positive_double(const char *text, const char *name) {
-    if (*text == '\0') {
-        throw std::invalid_argument(std::string("invalid ") + name + ": empty value");
-    }
-    char *end = nullptr;
-    errno = 0;
-    const double value = std::strtod(text, &end);
-    if (errno == ERANGE || end == text || *end != '\0' ||
-        !std::isfinite(value) || value <= 0.0) {
-        throw std::invalid_argument(std::string("invalid ") + name + ": " + text);
-    }
-    return value;
-}
-
-std::uint64_t parse_uint64(const char *text) {
-    std::uint64_t value = 0;
-    const char *end = text + std::char_traits<char>::length(text);
-    const auto parsed = std::from_chars(text, end, value);
-    if (parsed.ec != std::errc{} || parsed.ptr != end) {
-        throw std::invalid_argument(std::string("invalid seed: ") + text);
-    }
-    return value;
-}
-
 Level2Config parse_options(int argc, char **argv) {
     Level2Config config;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
-        auto value_after = [&](const char *name) -> const char * {
-            if (++i >= argc) {
-                throw std::invalid_argument(std::string(name) + " requires a value");
-            }
-            return argv[i];
+        auto value_after = [&](const char *name) {
+            return welding::option_value(i, argc, argv, name);
         };
 
         if (argument == "--nx") {
-            config.nx = parse_positive_int(value_after("--nx"), "nx");
+            config.nx = welding::parse_positive_int(value_after("--nx"), "nx");
         } else if (argument == "--ny") {
-            config.ny = parse_positive_int(value_after("--ny"), "ny");
+            config.ny = welding::parse_positive_int(value_after("--ny"), "ny");
         } else if (argument == "--dt") {
-            config.dt = parse_positive_double(value_after("--dt"), "time step");
+            config.dt = welding::parse_positive_double(
+                value_after("--dt"), "time step");
         } else if (argument == "--total-time") {
-            config.total_time = parse_positive_double(
+            config.total_time = welding::parse_positive_double(
                 value_after("--total-time"), "total time");
         } else if (argument == "--heat-on-time") {
-            config.heat_on_time = parse_positive_double(
+            config.heat_on_time = welding::parse_positive_double(
                 value_after("--heat-on-time"), "heating duration");
         } else if (argument == "--walks") {
-            config.walks = parse_positive_int(
+            config.walks = welding::parse_positive_int(
                 value_after("--walks"), "walk count");
         } else if (argument == "--epsilon") {
-            config.epsilon = parse_positive_double(
+            config.epsilon = welding::parse_positive_double(
                 value_after("--epsilon"), "epsilon");
         } else if (argument == "--max-steps") {
-            config.max_steps = parse_positive_int(
+            config.max_steps = welding::parse_positive_int(
                 value_after("--max-steps"), "maximum step count");
         } else if (argument == "--field-stride") {
-            config.field_stride = parse_positive_int(
+            config.field_stride = welding::parse_positive_int(
                 value_after("--field-stride"), "field stride");
         } else if (argument == "--history-interpolation") {
             const std::string mode = value_after("--history-interpolation");
@@ -188,10 +146,10 @@ Level2Config parse_options(int argc, char **argv) {
                     "--history-interpolation must be bilinear or cubic");
             }
         } else if (argument == "--threads") {
-            config.threads = parse_positive_int(
+            config.threads = welding::parse_positive_int(
                 value_after("--threads"), "thread count");
         } else if (argument == "--seed") {
-            config.seed = parse_uint64(value_after("--seed"));
+            config.seed = welding::parse_uint64(value_after("--seed"));
         } else if (argument == "--output-prefix") {
             config.output_prefix = value_after("--output-prefix");
             if (config.output_prefix.empty()) {
@@ -236,154 +194,37 @@ double heating_fraction(double time_begin, double time_end,
     return (overlap_end - overlap_begin) / (time_end - time_begin);
 }
 
-struct TransientGaussianHeat2D {
-    static constexpr bool has_source = true;
-    static constexpr bool has_screening = true;
-    static constexpr bool has_green_source = true;
-
-    double alpha;
+struct TransientGaussianHeat2D
+    : welding::ZeroDirichletScreenedHeat2D {
     double power_fraction;
     double conductivity;
     const welding::FieldSampler2D &previous;
     const welding::GaussianHeatSource2D &heat_source;
-    wos::SourceMode source_mode = wos::SourceMode::Green;
 
-    bool source_may_intersect([[maybe_unused]] wos::Sphere2D sphere) const {
-        return true;
+    TransientGaussianHeat2D(
+            double alpha, double source_power_fraction,
+            double thermal_conductivity,
+            const welding::FieldSampler2D &previous_field,
+            const welding::GaussianHeatSource2D &source,
+            wos::SourceMode mode = wos::SourceMode::Green)
+        : ZeroDirichletScreenedHeat2D(alpha),
+          power_fraction(source_power_fraction),
+          conductivity(thermal_conductivity),
+          previous(previous_field), heat_source(source) {
+        source_mode = mode;
     }
 
     double source(wos::Point2D point) const {
         const double previous_contribution =
-            alpha * alpha * std::max(0.0, previous.sample(point));
+            screening_parameter_squared() *
+            std::max(0.0, previous.sample(point));
         const double heat_contribution = power_fraction > 0.0
             ? power_fraction * heat_source.volumetric_power_density(point)
                 / conductivity
             : 0.0;
         return previous_contribution + heat_contribution;
     }
-
-    wos::BoundaryCondition boundary(
-            [[maybe_unused]] wos::Point2D point,
-            [[maybe_unused]] int boundary_id) const {
-        return wos::BoundaryCondition::dirichlet(0.0);
-    }
-
-    double green(wos::Sphere2D sphere, wos::Point2D x,
-                 wos::Point2D y) const {
-        return wos::screened_green::green_2d(
-            alpha, sphere.radius, wos::dist(x, y));
-    }
-
-    double screening_factor(double radius) const {
-        return wos::screened_green::weight_2d(alpha, radius);
-    }
-
-    double green_mass(double radius) const {
-        return wos::screened_green::mass_2d(alpha, radius);
-    }
-
-    wos::Point2D sample_green(wos::Sphere2D sphere, wos::PRNG &rng) const {
-        const double radius = wos::screened_green::sample_radius_2d(
-            alpha, sphere.radius, rng);
-        const double angle = 2.0 * pi * rng.unit();
-        return wos::Point2D{
-            sphere.centre.x + radius * std::cos(angle),
-            sphere.centre.y + radius * std::sin(angle),
-        };
-    }
 };
-
-struct FieldSummary {
-    double peak_rise = 0.0;
-    int peak_i = 0;
-    int peak_j = 0;
-    double mean_standard_error = 0.0;
-    double max_standard_error = 0.0;
-    double minimum_interior_rise =
-        std::numeric_limits<double>::infinity();
-    std::size_t negative_interior_points = 0;
-    double thermal_energy_rise = 0.0;
-};
-
-FieldSummary summarize_field(const Level2Config &config,
-                             const wos::Grid &grid,
-                             const std::vector<double> &field,
-                             const std::vector<double> &standard_error) {
-    FieldSummary summary;
-    double standard_error_sum = 0.0;
-    std::size_t interior_count = 0;
-    double temperature_integral = 0.0;
-    const double dx = (grid.xmax - grid.xmin) /
-        static_cast<double>(grid.Nx - 1);
-    const double dy = (grid.ymax - grid.ymin) /
-        static_cast<double>(grid.Ny - 1);
-
-    for (int i = 0; i < grid.Nx; ++i) {
-        const double wx = (i == 0 || i == grid.Nx - 1) ? 0.5 : 1.0;
-        for (int j = 0; j < grid.Ny; ++j) {
-            const double wy = (j == 0 || j == grid.Ny - 1) ? 0.5 : 1.0;
-            const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
-            const double value = field[index];
-            temperature_integral += wx * wy * value;
-            if (value > summary.peak_rise) {
-                summary.peak_rise = value;
-                summary.peak_i = i;
-                summary.peak_j = j;
-            }
-            if (!welding::is_boundary_index_2d(grid, i, j)) {
-                standard_error_sum += standard_error[index];
-                summary.max_standard_error = std::max(
-                    summary.max_standard_error, standard_error[index]);
-                summary.minimum_interior_rise = std::min(
-                    summary.minimum_interior_rise, value);
-                if (value < 0.0) {
-                    ++summary.negative_interior_points;
-                }
-                ++interior_count;
-            }
-        }
-    }
-    if (interior_count > 0) {
-        summary.mean_standard_error = standard_error_sum /
-            static_cast<double>(interior_count);
-    } else {
-        summary.minimum_interior_rise = 0.0;
-    }
-    summary.thermal_energy_rise = config.density * config.specific_heat
-        * config.thickness * temperature_integral * dx * dy;
-    return summary;
-}
-
-void ensure_parent_directory(const std::filesystem::path &path) {
-    if (path.parent_path().empty()) {
-        return;
-    }
-    std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
-    if (error) {
-        throw std::runtime_error(
-            "could not create output directory: " + error.message());
-    }
-}
-
-void write_field(std::ofstream &output, int step, double time,
-                 const Level2Config &config, const wos::Grid &grid,
-                 const std::vector<double> &field,
-                 const std::vector<double> &standard_error) {
-    for (int i = 0; i < grid.Nx; ++i) {
-        const double x = wos::grid_coordinate(
-            grid.xmin, grid.xmax, i, grid.Nx);
-        for (int j = 0; j < grid.Ny; ++j) {
-            const double y = wos::grid_coordinate(
-                grid.ymin, grid.ymax, j, grid.Ny);
-            const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
-            output << step << ',' << time << ',' << x << ',' << y << ','
-                   << field[index] << ','
-                   << config.ambient_temperature + field[index] << ','
-                   << standard_error[index] << '\n';
-        }
-    }
-}
 
 int run_level2(const Level2Config &config) {
 #ifdef WELDING_LEVEL2_HAS_OPENMP
@@ -418,19 +259,9 @@ int run_level2(const Level2Config &config) {
 
     wos::Mesh<2> mesh = welding::make_rectangular_plate(
         xmin, xmax, ymin, ymax);
-    std::unique_ptr<wos::BVH<2>> bvh = wos::build_bvh(mesh);
-    std::vector<wos::solver::StartPoint<2>> starts(point_count);
-    for (int i = 0; i < grid.Nx; ++i) {
-        const double x = wos::grid_coordinate(
-            grid.xmin, grid.xmax, i, grid.Nx);
-        for (int j = 0; j < grid.Ny; ++j) {
-            const double y = wos::grid_coordinate(
-                grid.ymin, grid.ymax, j, grid.Ny);
-            const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
-            const wos::Point2D point{x, y};
-            starts[index] = wos::solver::find_start_point(*bvh, point);
-        }
-    }
+    wos::FcpwGeometryScene<2> geometry_scene(mesh);
+    const std::vector<wos::solver::StartPoint<2>> starts =
+        welding::build_start_points_2d(grid, geometry_scene);
 
     const welding::GaussianHeatSource2D heat_source(
         xmin, xmax, ymin, ymax,
@@ -451,9 +282,9 @@ int run_level2(const Level2Config &config) {
         prefix.string() + "_history.csv";
     const std::filesystem::path metadata_path =
         prefix.string() + "_metadata.csv";
-    ensure_parent_directory(summary_path);
-    ensure_parent_directory(history_path);
-    ensure_parent_directory(metadata_path);
+    welding::ensure_parent_directory(summary_path);
+    welding::ensure_parent_directory(history_path);
+    welding::ensure_parent_directory(metadata_path);
     std::ofstream summary_output(summary_path);
     std::ofstream history_output(history_path);
     std::ofstream metadata_output(metadata_path);
@@ -513,8 +344,9 @@ int run_level2(const Level2Config &config) {
     const int center_j = grid.Ny / 2;
     const std::size_t center_index = welding::flat_index_2d(
         center_i, center_j, grid.Ny);
-    write_field(history_output, 0, 0.0, config, grid,
-                previous, standard_error);
+    welding::write_temperature_field_2d(
+        history_output, 0, 0.0, config.ambient_temperature,
+        grid, previous, standard_error);
     summary_output
         << "0,0,0,0,0,0," << config.ambient_temperature
         << ",0,0," << config.ambient_temperature
@@ -582,18 +414,15 @@ int run_level2(const Level2Config &config) {
                     i, j, grid.Ny);
                 const wos::Point2D point{x, y};
 
-                const std::uint64_t point_seed = wos::splitmix64(
-                    config.seed
-                    ^ wos::splitmix64(static_cast<std::uint64_t>(step))
-                    ^ wos::splitmix64(static_cast<std::uint64_t>(index)));
-                wos::PRNG walk_rng(wos::splitmix64(
-                    point_seed ^ 0x13198A2E03707344ULL));
-                wos::PRNG source_rng(wos::splitmix64(
-                    point_seed ^ 0xA4093822299F31D0ULL));
+                welding::PathRandomStreams random =
+                    welding::make_path_random_streams(welding::point_seed(
+                        config.seed,
+                        wos::splitmix64(static_cast<std::uint64_t>(step)),
+                        index));
 
                 const wos::solver::Result result = solver.solve(
-                    *bvh, point, starts[index], equation,
-                    walk_rng, source_rng);
+                    geometry_scene, point, starts[index], equation,
+                    random.walk, random.source);
                 next[index] = result.mean;
                 standard_error[index] = result.standard_error;
                 max_steps_hits += result.max_steps_hits;
@@ -602,8 +431,10 @@ int run_level2(const Level2Config &config) {
 
         const double step_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - step_start).count();
-        const FieldSummary field_summary = summarize_field(
-            config, grid, next, standard_error);
+        const welding::TemperatureFieldSummary2D field_summary =
+            welding::summarize_temperature_field_2d(
+                grid, next, standard_error, config.density,
+                config.specific_heat, config.thickness);
         const double peak_x = wos::grid_coordinate(
             grid.xmin, grid.xmax, field_summary.peak_i, grid.Nx);
         const double peak_y = wos::grid_coordinate(
@@ -630,8 +461,9 @@ int run_level2(const Level2Config &config) {
             step == step_count ||
             (time_begin < config.heat_on_time &&
              time_end >= config.heat_on_time)) {
-            write_field(history_output, step, time_end, config, grid,
-                        next, standard_error);
+            welding::write_temperature_field_2d(
+                history_output, step, time_end,
+                config.ambient_temperature, grid, next, standard_error);
         }
 
         const int report_stride = std::max(1, step_count / 20);

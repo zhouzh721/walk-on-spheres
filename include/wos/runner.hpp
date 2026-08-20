@@ -5,15 +5,17 @@
 #include <cstdio>
 #include <exception>
 #include <mpi.h>
-#include "wos/bvh.hpp"
+#include "wos/boundary/scene.hpp"
 #include "wos/field_3D.hpp"
+#include "wos/geometry/fcpw_scene.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
 #include "wos/hdf5_io.hpp"
-#include "wos/inside.hpp"
 #include "wos/mesh.hpp"
 #include "wos/prng.hpp"
 #include "wos/solver/wos.hpp"
+#include "wos/solver/wost.hpp"
+#include "wos/solver/type.hpp"
 #include "wos/source_mode.hpp"
 
 namespace wos {
@@ -24,7 +26,8 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
         int Nx, int Ny, int Nz, int N_walks, double epsilon, int max_steps,
         int max_ray_attempts, const Eq &eq, std::uint64_t global_seed,
         bool write_source_metadata = false, double alpha = 0.0,
-        SourceMode source_mode = SourceMode::Uniform) {
+        SourceMode source_mode = SourceMode::Uniform,
+        solver::Type solver_type = solver::Type::WoS) {
     Mesh<N> domain;
     int mesh_ok = 1;
     if (rank == 0) {
@@ -44,39 +47,58 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
     bcast_mesh(domain, 0, MPI_COMM_WORLD);
     if (rank == 0) std::printf("Finished broadcasting.\n");
 
-    std::unique_ptr<BVH<N>> bvh;
-    int bvh_ok = 1;
-    double bvh_build_seconds = 0.0;
-    if (rank == 0) {
-        std::printf("Building BVH...\n");
-        const double build_start = MPI_Wtime();
-        try {
-            bvh = build_bvh(domain);
-            bvh_build_seconds = MPI_Wtime() - build_start;
-        } catch (const std::exception &error) {
-            std::fprintf(stderr, "BVH build failed: %s\n", error.what());
-            bvh_ok = 0;
+    if constexpr (N == 3) {
+        if (solver_type == solver::Type::WoSt) {
+            if (rank == 0) {
+                std::fprintf(
+                    stderr,
+                    "WoSt currently supports two-dimensional meshes only\n");
+            }
+            return 1;
         }
     }
-    MPI_Bcast(&bvh_ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (!bvh_ok) {
-        return 1;
-    }
-    if (rank != 0) bvh = std::make_unique<BVH<N>>();
 
-    if (rank == 0) {
-        if (size > 1) {
-            std::printf("Finished BVH build in %.6f s. Broadcasting BVH...\n",
-                        bvh_build_seconds);
+    std::unique_ptr<FcpwGeometryScene<N>> fcpw_scene;
+    std::unique_ptr<BoundaryScene2D> boundary_scene;
+    GeometryScene<N> *geometry_scene = nullptr;
+    int scene_ok = 1;
+    const double scene_build_start = MPI_Wtime();
+    try {
+        if constexpr (N == 2) {
+            if (solver_type == solver::Type::WoSt) {
+                boundary_scene = make_boundary_scene_2d(
+                    domain, classify_boundary_primitives(domain, eq));
+                geometry_scene = boundary_scene.get();
+            } else {
+                fcpw_scene =
+                    std::make_unique<FcpwGeometryScene<N>>(domain);
+                geometry_scene = fcpw_scene.get();
+            }
         } else {
-            std::printf("Finished BVH build in %.6f s.\n", bvh_build_seconds);
+            fcpw_scene = std::make_unique<FcpwGeometryScene<N>>(domain);
+            geometry_scene = fcpw_scene.get();
         }
+    } catch (const std::exception &error) {
+        if (rank == 0) {
+            std::fprintf(stderr, "FCPW scene build failed: %s\n",
+                         error.what());
+        }
+        scene_ok = 0;
     }
-    const double bcast_start = MPI_Wtime();
-    bcast_bvh(*bvh, domain, 0, MPI_COMM_WORLD);
-    const double bcast_seconds = MPI_Wtime() - bcast_start;
-    if (rank == 0 && size > 1) {
-        std::printf("Finished BVH broadcast in %.6f s.\n", bcast_seconds);
+    int global_scene_ok = 0;
+    MPI_Allreduce(&scene_ok, &global_scene_ok, 1, MPI_INT,
+                  MPI_MIN, MPI_COMM_WORLD);
+    if (!global_scene_ok) return 1;
+
+    const double local_scene_build_seconds =
+        MPI_Wtime() - scene_build_start;
+    double global_scene_build_seconds = 0.0;
+    MPI_Reduce(&local_scene_build_seconds, &global_scene_build_seconds,
+               1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::printf(
+            "Finished local FCPW scene builds in %.6f s (maximum rank time).\n",
+            global_scene_build_seconds);
     }
 
     // setup domain discretisation
@@ -146,14 +168,21 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
 
     long long local_inside_count = 0;
     long long local_max_steps_hits = 0;
+    long long local_invalid_paths = 0;
     long long local_ambiguous_ray_retries = 0;
     long long local_indeterminate_points = 0;
     double local_sums[3] = {0.0, 0.0, 0.0};
 
-    if (rank == 0) std::printf("Beginning walk-on-spheres...\n");
+    if (rank == 0) {
+        std::printf("Beginning %s...\n",
+                    solver_type == solver::Type::WoSt
+                        ? "walk-on-stars" : "walk-on-spheres");
+    }
     MPI_Barrier(MPI_COMM_WORLD);
     const double wos_start = MPI_Wtime();
     const solver::WoS wos_solver(
+        solver::Settings{N_walks, epsilon, max_steps});
+    const solver::WoSt wost_solver(
         solver::Settings{N_walks, epsilon, max_steps});
 
     for (int i = 0; i < block_Nx; i++) {
@@ -176,55 +205,80 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
                     p0 = Point3D{x, y, z};
                 }
 
-                auto start = solver::find_start_point(*bvh, p0);
-                PointLocation point_location;
-                if constexpr (N == 2) {
-                    point_location = classify_point(domain, p0, start.radius, boundary_tolerance);
-                } else {
+                const solver::StartPoint<N> start =
+                    solver::find_start_point(*geometry_scene, p0);
+                PointClassification classification{};
+                if constexpr (N == 3) {
                     constexpr std::uint64_t INSIDE_STREAM = 0x243F6A8885A308D3ULL;
                     PRNG inside_rng(splitmix64(point_seed ^ INSIDE_STREAM));
-                    const PointClassification classification =
-                        classify_point(*bvh, p0, start.radius, boundary_tolerance,
-                                       max_ray_attempts, inside_rng);
-                    point_location = classification.location;
+                    classification = geometry_scene->classify_point(
+                        p0, start.radius, boundary_tolerance,
+                        max_ray_attempts, inside_rng);
                     local_ambiguous_ray_retries +=
                         classification.ambiguous_ray_retries;
-                    if (point_location == PointLocation::Indeterminate) {
+                    if (classification.location ==
+                        PointLocation::Indeterminate) {
                         ++local_indeterminate_points;
                     }
+                } else {
+                    PRNG unused_classification_rng(0);
+                    classification = geometry_scene->classify_point(
+                        p0, start.radius, boundary_tolerance,
+                        max_ray_attempts, unused_classification_rng);
                 }
+                const PointLocation point_location = classification.location;
 
-                solver::Result point_result{NAN, NAN, NAN, NAN, 0};
+                solver::Result point_result{NAN, NAN, NAN, NAN, 0, 0};
+                bool solve_point = point_location == PointLocation::Inside;
                 if (point_location == PointLocation::Boundary) {
                     if constexpr (N == 2) {
-                        point_result = solver::Result{
-                            dirichlet_value(eq.boundary(
-                                start.nearest, start.boundary_id)),
-                            0.0, 0.0, 0.0, 0
-                        };
+                        const BoundaryCondition condition = eq.boundary(
+                            start.nearest, start.boundary_id);
+                        if (solver_type == solver::Type::WoSt &&
+                            condition.type == BoundaryType::Neumann) {
+                            solve_point = true;
+                        } else {
+                            point_result = solver::Result{
+                                dirichlet_value(condition),
+                                0.0, 0.0, 0.0, 0, 0
+                            };
+                        }
                     } else {
                         point_result = solver::Result{
                             dirichlet_value(eq.boundary(start.nearest)),
-                            0.0, 0.0, 0.0, 0
+                            0.0, 0.0, 0.0, 0, 0
                         };
                     }
-                } else if (point_location == PointLocation::Inside) {
+                }
+                if (solve_point) {
                     constexpr std::uint64_t WOS_STREAM = 0x13198A2E03707344ULL;
                     PRNG walk_rng(splitmix64(point_seed ^ WOS_STREAM));
                     if constexpr (N == 2) {
                         constexpr std::uint64_t SOURCE_STREAM = 0xA4093822299F31D0ULL;
+                        constexpr std::uint64_t BOUNDARY_STREAM = 0x082EFA98EC4E6C89ULL;
                         PRNG source_rng(splitmix64(point_seed ^ SOURCE_STREAM));
-                        point_result = wos_solver.solve(
-                            *bvh, p0, start, eq, walk_rng, source_rng);
+                        if (solver_type == solver::Type::WoSt) {
+                            PRNG boundary_rng(splitmix64(
+                                point_seed ^ BOUNDARY_STREAM));
+                            point_result = wost_solver.solve(
+                                *boundary_scene, p0, eq, walk_rng,
+                                source_rng, boundary_rng);
+                        } else {
+                            point_result = wos_solver.solve(
+                                *geometry_scene, p0, start, eq,
+                                walk_rng, source_rng);
+                        }
                     } else {
                         // Preserve the existing 3D behaviour: source sampling
                         // and WoS steps continue to share one random stream.
                         point_result = wos_solver.solve(
-                            *bvh, p0, start, eq, walk_rng, walk_rng);
+                            *geometry_scene, p0, start, eq,
+                            walk_rng, walk_rng);
                     }
 
                     ++local_inside_count;
                     local_max_steps_hits += point_result.max_steps_hits;
+                    local_invalid_paths += point_result.invalid_paths;
                     local_sums[0] += point_result.variance;
                     local_sums[1] += point_result.standard_error;
                     local_sums[2] += point_result.mean_steps;
@@ -246,12 +300,15 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
 
     long long global_inside_count = 0;
     long long global_max_steps_hits = 0;
+    long long global_invalid_paths = 0;
     long long global_ambiguous_ray_retries = 0;
     long long global_indeterminate_points = 0;
     double global_sums[3] = {0.0, 0.0, 0.0};
     MPI_Reduce(&local_inside_count, &global_inside_count, 1, MPI_LONG_LONG_INT,
                MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_max_steps_hits, &global_max_steps_hits, 1,
+               MPI_LONG_LONG_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_invalid_paths, &global_invalid_paths, 1,
                MPI_LONG_LONG_INT, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(local_sums, global_sums, 3, MPI_DOUBLE,
                MPI_SUM, 0, MPI_COMM_WORLD);
@@ -266,12 +323,17 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
 
     if (rank == 0 && global_inside_count > 0) {
         double count = static_cast<double>(global_inside_count);
-        std::printf("\nWoS inside-grid averages:\n");
+        std::printf("\n%s solved-grid averages:\n",
+                    solver_type == solver::Type::WoSt ? "WoSt" : "WoS");
         std::printf("  number of inside points:       %lld\n", global_inside_count);
         std::printf("  average variance:              %.12g\n", global_sums[0] / count);
         std::printf("  average standard error:        %.12g\n", global_sums[1] / count);
         std::printf("  average steps per walk:        %.12g\n", global_sums[2] / count);
         std::printf("  paths reaching max steps:      %lld\n", global_max_steps_hits);
+        if (solver_type == solver::Type::WoSt) {
+            std::printf("  invalid path attempts:         %lld\n",
+                        global_invalid_paths);
+        }
         std::printf("\n");
     }
     if constexpr (N == 3) {
@@ -285,7 +347,9 @@ int run(int rank, int size, const char *mesh_filename, const char *output_filena
     }
 
     if (rank == 0) {
-        std::printf("Finished walk-on-spheres in %.6f s. Writing results...\n",
+        std::printf("Finished %s in %.6f s. Writing results...\n",
+                    solver_type == solver::Type::WoSt
+                        ? "walk-on-stars" : "walk-on-spheres",
                     global_wos_seconds);
     }
 

@@ -12,15 +12,17 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include <mpi.h>
 
+#include "welding/file_output.hpp"
 #include "welding/gaussian_heat_source.hpp"
+#include "welding/grid_utils.hpp"
+#include "welding/random_streams.hpp"
 #include "welding/rectangular_plate.hpp"
 #include "wos/boundary/condition.hpp"
-#include "wos/bvh.hpp"
+#include "wos/geometry/fcpw_scene.hpp"
 #include "wos/geometry/sphere.hpp"
 #include "wos/grid.hpp"
 #include "wos/hash.hpp"
@@ -102,6 +104,11 @@ struct ManufacturedPoisson2D {
         return eigenvalue * exact(point);
     }
 
+    wos::BoundaryType boundary_type(
+            [[maybe_unused]] int boundary_id) const {
+        return wos::BoundaryType::Dirichlet;
+    }
+
     wos::BoundaryCondition boundary(
             [[maybe_unused]] wos::Point2D point,
             [[maybe_unused]] int boundary_id) const {
@@ -152,6 +159,11 @@ struct StationaryGaussianHeat2D {
         return heat_source.volumetric_power_density(point) / conductivity;
     }
 
+    wos::BoundaryType boundary_type(
+            [[maybe_unused]] int boundary_id) const {
+        return wos::BoundaryType::Dirichlet;
+    }
+
     wos::BoundaryCondition boundary(
             [[maybe_unused]] wos::Point2D point,
             [[maybe_unused]] int boundary_id) const {
@@ -198,36 +210,9 @@ std::filesystem::path data_directory() {
     return std::filesystem::path(WELDING_RESULTS_DIR) / "data";
 }
 
-void ensure_directory(const std::filesystem::path &directory) {
-    std::error_code error;
-    std::filesystem::create_directories(directory, error);
-    if (error) {
-        throw std::runtime_error(
-            "could not create output directory: " + error.message());
-    }
-}
-
-std::vector<wos::solver::StartPoint<2>> build_start_points(
-    const wos::Grid &grid, const wos::BVH<2> &bvh) {
-    std::vector<wos::solver::StartPoint<2>> starts(
-        static_cast<std::size_t>(grid.Nx) * grid.Ny);
-    for (int i = 0; i < grid.Nx; ++i) {
-        const double x = wos::grid_coordinate(
-            grid.xmin, grid.xmax, i, grid.Nx);
-        for (int j = 0; j < grid.Ny; ++j) {
-            const double y = wos::grid_coordinate(
-                grid.ymin, grid.ymax, j, grid.Ny);
-            const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
-            starts[index] = wos::solver::find_start_point(
-                bvh, wos::Point2D{x, y});
-        }
-    }
-    return starts;
-}
-
 template<typename Equation>
 FieldSolution solve_field(const wos::Grid &grid,
-                          const wos::BVH<2> &bvh,
+                          const wos::GeometryScene<2> &geometry_scene,
                           const std::vector<wos::solver::StartPoint<2>> &starts,
                           const Equation &equation,
                           const Level1Config &config,
@@ -253,17 +238,13 @@ FieldSolution solve_field(const wos::Grid &grid,
             const std::size_t index = welding::flat_index_2d(i, j, grid.Ny);
             const wos::Point2D point{x, y};
 
-            const std::uint64_t point_seed = wos::splitmix64(
-                config.seed ^ case_stream ^
-                wos::splitmix64(static_cast<std::uint64_t>(index)));
-            wos::PRNG walk_rng(wos::splitmix64(
-                point_seed ^ 0x13198A2E03707344ULL));
-            wos::PRNG source_rng(wos::splitmix64(
-                point_seed ^ 0xA4093822299F31D0ULL));
+            welding::PathRandomStreams random =
+                welding::make_path_random_streams(welding::point_seed(
+                    config.seed, case_stream, index));
 
             const wos::solver::Result result = solver.solve(
-                bvh, point, starts[index], equation,
-                walk_rng, source_rng);
+                geometry_scene, point, starts[index], equation,
+                random.walk, random.source);
             solution.mean[index] = result.mean;
             solution.variance[index] = result.variance;
             solution.standard_error[index] = result.standard_error;
@@ -599,12 +580,12 @@ int run_level1() {
         0.0, 0.0,
     };
 
-    ensure_directory(data_directory());
+    welding::ensure_directory(data_directory());
     const wos::Mesh<2> mesh = welding::make_rectangular_plate(
         grid.xmin, grid.xmax, grid.ymin, grid.ymax);
-    const std::unique_ptr<wos::BVH<2>> bvh = wos::build_bvh(mesh);
+    const wos::FcpwGeometryScene<2> geometry_scene(mesh);
     const std::vector<wos::solver::StartPoint<2>> starts =
-        build_start_points(grid, *bvh);
+        welding::build_start_points_2d(grid, geometry_scene);
 
     std::printf("Level-1 stationary welding heat verification\n");
     std::printf("  grid:                  %d x %d\n", grid.Nx, grid.Ny);
@@ -622,7 +603,7 @@ int run_level1() {
     };
     const auto manufactured_start = std::chrono::steady_clock::now();
     const FieldSolution manufactured_solution = solve_field(
-        grid, *bvh, starts, manufactured, config,
+        grid, geometry_scene, starts, manufactured, config,
         0x4C4556454C31414FULL);
     const double manufactured_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - manufactured_start).count();
@@ -644,7 +625,7 @@ int run_level1() {
     };
     const auto gaussian_green_start = std::chrono::steady_clock::now();
     const FieldSolution gaussian_green_solution = solve_field(
-        grid, *bvh, starts, gaussian_green, config,
+        grid, geometry_scene, starts, gaussian_green, config,
         0x4C4556454C314247ULL);
     const double gaussian_green_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - gaussian_green_start).count();
@@ -663,7 +644,7 @@ int run_level1() {
     };
     const auto gaussian_mis_start = std::chrono::steady_clock::now();
     const FieldSolution gaussian_mis_solution = solve_field(
-        grid, *bvh, starts, gaussian_mis, config,
+        grid, geometry_scene, starts, gaussian_mis, config,
         0x4C4556454C314247ULL);
     const double gaussian_mis_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - gaussian_mis_start).count();

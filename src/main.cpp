@@ -26,9 +26,10 @@ static void print_usage(const char *program) {
         "Options:\n"
         "  -o, --output FILE  HDF5 output path (default: wos.h5)\n"
         "      --seed UINT64  fixed random seed (default: generated from current time)\n"
-        "      --walks N      WoS paths per inside grid point (default: 10000)\n"
+        "      --walks N      paths per solved grid point (default: 10000)\n"
+        "      --solver NAME  solver: wos or wost (default: wos)\n"
         "      --epsilon X    boundary stopping distance (default: 0.01)\n"
-        "      --max-steps N  maximum steps per WoS path (default: 1000)\n"
+        "      --max-steps N  maximum steps per path (default: 1000)\n"
         "      --max-ray-attempts N\n"
         "                     maximum 3D inside-test ray attempts (default: 12)\n"
         "      --alpha X      screened Poisson coefficient (default: 5;\n"
@@ -98,6 +99,7 @@ int main(int argc, char **argv) {
     int max_ray_attempts = 12;
     double alpha = 5.0;
     SourceMode source_mode = SourceMode::Uniform;
+    solver::Type solver_type = solver::Type::WoS;
     bool force_output = false;
     std::uint64_t seed = 0;
     bool seed_provided = false;
@@ -141,6 +143,23 @@ int main(int argc, char **argv) {
                 }
                 if (!parse_int(argv[i], 1, &N_walks)) {
                     std::fprintf(stderr, "Invalid --walks value: %s\n", argv[i]);
+                    cli_status = 1;
+                    break;
+                }
+            } else if (std::strcmp(argv[i], "--solver") == 0) {
+                if (++i >= argc) {
+                    std::fprintf(stderr, "%s requires wos or wost\n",
+                                 argv[i-1]);
+                    cli_status = 1;
+                    break;
+                }
+                if (std::strcmp(argv[i], "wos") == 0) {
+                    solver_type = solver::Type::WoS;
+                } else if (std::strcmp(argv[i], "wost") == 0) {
+                    solver_type = solver::Type::WoSt;
+                } else {
+                    std::fprintf(stderr,
+                                 "Invalid --solver value: %s\n", argv[i]);
                     cli_status = 1;
                     break;
                 }
@@ -271,6 +290,9 @@ int main(int argc, char **argv) {
     MPI_Bcast(&epsilon, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_steps, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_ray_attempts, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    int solver_type_value = static_cast<int>(solver_type);
+    MPI_Bcast(&solver_type_value, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    solver_type = static_cast<solver::Type>(solver_type_value);
     MPI_Bcast(&alpha, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     int source_mode_value = static_cast<int>(source_mode);
     MPI_Bcast(&source_mode_value, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -381,11 +403,13 @@ int main(int argc, char **argv) {
     if (dim == 2) {
         rc = eq->run_2D(rank, size, mesh_filename_buf.data(), output_filename_buf.data(),
                         Nx, Ny, Nz, N_walks, epsilon, max_steps,
-                        max_ray_attempts, seed, alpha, source_mode);
+                        max_ray_attempts, seed, alpha, source_mode,
+                        solver_type);
     } else {
         rc = eq->run_3D(rank, size, mesh_filename_buf.data(), output_filename_buf.data(),
                         Nx, Ny, Nz, N_walks, epsilon, max_steps,
-                        max_ray_attempts, seed, alpha, source_mode);
+                        max_ray_attempts, seed, alpha, source_mode,
+                        solver_type);
     }
 
     MPI_Finalize();

@@ -44,6 +44,10 @@ struct Poisson2D {
              : 0.0;
     }
 
+    BoundaryType boundary_type([[maybe_unused]] int boundary_id) const {
+        return BoundaryType::Dirichlet;
+    }
+
     BoundaryCondition boundary(Point2D p, int boundary_id) const {
         // All edges of the membrane are fixed in the reference plane.
         (void)p;
@@ -120,19 +124,21 @@ struct Poisson3D {
 
 int run_2D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     return run<2>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
                   max_steps, max_ray_attempts, Poisson2D{source_mode}, seed,
-                  true, 0.0, source_mode);
+                  true, 0.0, source_mode, solver_type);
 }
 int run_3D(int rank, int size, const char *mesh, const char *output, int Nx, int Ny, int Nz,
            int N_walks, double eps, int max_steps, int max_ray_attempts,
-           uint64_t seed, double alpha, SourceMode source_mode) {
+           uint64_t seed, double alpha, SourceMode source_mode,
+           solver::Type solver_type) {
     (void)alpha;
     return run<3>(rank, size, mesh, output, Nx, Ny, Nz, N_walks, eps,
                   max_steps, max_ray_attempts, Poisson3D{source_mode}, seed,
-                  true, 0.0, source_mode);
+                  true, 0.0, source_mode, solver_type);
 }
 
 }   // anonymous namespace

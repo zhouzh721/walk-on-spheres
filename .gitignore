@@ -7,7 +7,8 @@ build*/
 tmp/
 output/
 results/
-docs/
+docs/*
+!docs/geometry_backend.md
 geometry_configs/
 meshes/
 tests/
